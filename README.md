@@ -3,7 +3,7 @@
 **VDualGrid** là EA lưới dùng **chờ ảo** (không gửi lệnh chờ lên sàn): mỗi **mức giá lưới** duy trì **một Buy ảo + một Sell ảo**; khi giá chạm điều kiện kích hoạt, EA đặt **lệnh thị trường** kèm **TP (pip)**. Một **magic** cho toàn bộ lệnh do EA quản lý.
 
 - **File mã nguồn:** `VDualGrid.mq5`  
-- **Phiên bản:** xem `#property version` trong file  
+- **Phiên bản:** xem `#property version` trong file (ví dụ **3.48** tại thời điểm cập nhật README)  
 - **Nền tảng:** MT5 (hedging/netting — logic dựa trên vị thế & deal chuẩn MT5)
 
 ---
@@ -44,7 +44,40 @@
 2. Mở **MetaEditor** → mở file → **Compile (F7)**.  
 3. Trên chart: **Navigator → Expert Advisors** → kéo **VDualGrid** lên chart, bật **Algo Trading**.
 
-**Telegram:** bật `EnableTelegram` thì trong MT5 cần thêm `https://api.telegram.org` vào *Tools → Options → Expert Advisors → Allow WebRequest*.
+**WebRequest (MT5):** *Tools → Options → Expert Advisors → Allow WebRequest*
+
+| URL | Khi nào cần |
+|-----|-------------|
+| `https://api.telegram.org` | `EnableTelegram` |
+| `https://api.groq.com` | `EnableGroqTelegramAI` + `TelegramFunAIAnalysis` (gọi Groq) |
+
+---
+
+## Thông báo: MT5, Telegram, Groq
+
+### Điện thoại / push MT5 (`SendNotification`)
+
+- Gắn với `EnableResetNotification`: tin **ngắn** (≤255 ký tự) — symbol, lý do, giá, số dư, % P/L.  
+- **Không** gửi khối thống kê nến dài hay ảnh chart qua kênh này.
+
+### Telegram (`EnableTelegram`)
+
+Khi reset phiên / dừng EA, luồng gửi bot được tách rõ:
+
+1. **Tin 1 — chỉ báo EA**  
+   Một lần `sendMessage`: lý do, giá, số dư lúc gắn, P/L giao dịch so với gốc gắn, drawdown, link đăng ký (nội dung trong code). **Không** kèm khối nến hay AI.
+
+2. **Tin 2 — biểu đồ & AI** (chỉ khi bật ít nhất một trong: `TelegramFunAIAnalysis`, `EnableTelegramChartScreenshot`, hoặc có khối phân tích nến từ `EnableTelegramChartAnalysis`)
+
+   - **Số liệu nến:** `EnableTelegramChartAnalysis` dùng `CopyRates` trên `ChartAnalysisTimeframe` / `ChartAnalysisBars` — mô tả thống kê tiếng Việt (không thay cho tư vấn đầu tư).  
+   - **Groq:** nếu `TelegramFunAIAnalysis` + `EnableGroqTelegramAI` + API key hợp lệ:
+     - Có **khối nến đủ dài** gửi lên Groq → **không** dùng rule-based thay thế (xem `GroqFallbackToLocalFunAI` chỉ áp khi *không* gửi biểu đồ).  
+     - **`GroqStructuredChartAnalysis = true`** và đủ dữ liệu nến → prompt **báo cáo 4 mục** (xu hướng, hỗ trợ/kháng cự, chiến lược thận trọng, tâm lý). **Tắt** → giọng **chém gió** + vẫn bám số nến; đoạn AI có thể được rút gọn nhẹ cho Telegram.  
+     - Phân tích có cấu trúc: `GroqMaxTokens` được nâng tối thiểu **2000**, tối đa **8192**; bản **chém gió** giới hạn tối đa **2048** token như cấu hình.  
+   - **Ảnh chart:** `EnableTelegramChartScreenshot` — chụp GIF (`ChartScreenShot`), gửi `sendPhoto` với **caption ngắn** (symbol); **toàn bộ** text số nến + AI gửi **tin nhắn text riêng** ngay sau (nếu rất dài, Telegram có thể tách thêm `[Tiếp 2]`… — giới hạn ~4096 ký tự mỗi bubble).  
+   - **Tắt ảnh:** một hoặc nhiều tin text, nội dung **đầy đủ** (chunk tự động), không cắt cứng một bubble 4096 như phiên bản cũ.
+
+**Lưu ý:** Groq chỉ nhận **số liệu nến trong prompt**, không “đọc” pixel ảnh; ảnh chỉ để bạn xem nhanh chart trên Telegram.
 
 ---
 
@@ -59,7 +92,16 @@
 | | `VirtualGridTakeProfitPips` | TP pip cho lệnh sau khi chờ khớp (0 = tắt). |
 | **4. SESSION** | `EnableSessionProfitReset`, `SessionProfitTargetUSD` | Bật reset phiên & ngưỡng USD. |
 | **4.1** | `TotalProfitStopUSD` | 0 = tắt; >0 = cộng dồn theo mỗi lần đạt reset phiên, đủ thì gỡ EA. |
-| **5 / 5.1** | Thông báo MT5, Telegram | Push / bot. |
+| **5** | `EnableResetNotification` | Push MT5 khi reset / dừng EA. |
+| **5.1 Telegram** | `EnableTelegram`, `TelegramBotToken`, `TelegramChatID` | Bot Telegram. |
+| | `TelegramFunAIAnalysis` | Bật khối AI trên Telegram (có chart → ưu tiên Groq). |
+| | `EnableTelegramChartAnalysis`, `ChartAnalysisTimeframe`, `ChartAnalysisBars` | Thống kê nến realtime trong tin 2. |
+| | `EnableTelegramChartScreenshot`, `TelegramScreenshotWidth/Height` | Gửi ảnh GIF chart (chart phải mở trên MT5). |
+| **5.2 Groq** | `EnableGroqTelegramAI`, `GroqApiKey`, `GroqModel` | API Groq cho tin 2. |
+| | `GroqMaxTokens`, `GroqTimeoutMs` | Độ dài / thời gian chờ phản hồi. |
+| | `GroqFallbackToLocalFunAI` | Chỉ khi *không* gửi khối biểu đồ: Groq lỗi → rule-based vui. |
+| | `GroqStructuredChartAnalysis` | Bật: báo cáo 4 mục đầy đủ (đủ khối nến). Tắt: chém gió. |
+| **6. CAPITAL** | `EnableCapitalBasedScaling`, `CapitalGainScalePercent`, `CapitalScaleMaxBoostPercent` | Scale lot & mục tiêu phiên theo số dư vs gốc gắn EA (xem comment trong code). |
 
 Giá trị mặc định trong code có thể thay đổi theo phiên bản — luôn kiểm tra tab **Inputs** sau khi compile.
 
@@ -68,10 +110,12 @@ Giá trị mặc định trong code có thể thay đổi theo phiên bản — 
 ## Ghi chú rủi ro & giới hạn
 
 - **Không phải tư vấn đầu tư.** Giao dịch có rủi ro; chỉ dùng vốn chấp nhận mất.  
+- **Phân tích AI / thống kê nến trên Telegram** chỉ mang tính tham khảo từ dữ liệu EA cung cấp; **Groq** và **Telegram** phụ thuộc mạng, API key và cấu hình WebRequest — không lưu key trong file `.set` công khai.  
 - **200 bậc mỗi phía** (mặc định trong code hiện tại) ⇒ rất nhiều chờ ảo trong bộ nhớ và tải CPU mỗi lần bảo trì lưới — cân nhắc giảm `MaxGridLevels` khi tối ưu.  
 - **Spread, trượt giá, quy tắc sàn** ảnh hưởng trực tiếp tới kích hoạt và P/L.  
 - **TP tổng** chỉ tích lũy khi có **sự kiện reset phiên** (mục 4); nếu tắt reset phiên thì không có “lần reset” để cộng dồn.  
-- EA chỉ đóng/xóa lệnh **đúng magic** của mình; lệnh tay hoặc EA khác trên cùng symbol không bị đụng (trừ khi trùng magic).
+- EA chỉ đóng/xóa lệnh **đúng magic** của mình; lệnh tay hoặc EA khác trên cùng symbol không bị đụng (trừ khi trùng magic).  
+- **Ảnh chart:** `ChartScreenShot` có thể thất bại trong Strategy Tester hoặc khi chart không hiển thị đúng — xem log Experts.
 
 ---
 
