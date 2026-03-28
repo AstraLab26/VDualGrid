@@ -5,7 +5,7 @@
 // Allow wrapper versions to reuse this file while overriding #property fields.
 #ifndef VDUALGRID_SKIP_PROPERTIES
 #property copyright "VDualGrid"
-#property version   "3.25"
+#property version   "3.26"
 #property description "VDualGrid: virtual dual-side grid; half-step to level 1; session reset; cumulative total TP stop"
 #endif
 // Telegram: Add https://api.telegram.org to Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL
@@ -27,15 +27,15 @@ input int MaxGridLevels = 200;                  // Số bậc phía trên gốc 
 //+------------------------------------------------------------------+
 input group "=== 2. ORDERS — Chung ==="
 input int MagicNumber = 123456;                // Magic: chờ ảo + lệnh market do EA đặt
-input string CommentOrder = "VDualGrid";       // Comment lệnh market (khớp từ chờ ảo)
+input string CommentOrder = "VPGrid";           // Comment lệnh market (khớp từ chờ ảo)
 
 //+------------------------------------------------------------------+
 //| 3. CHỜ ẢO — mỗi bậc 1 Buy+1 Sell ảo; khớp -> market + TP pip       |
 //+------------------------------------------------------------------+
 input group "=== 3. ORDERS — Chờ ảo (full lưới) ==="
-input double VirtualGridLotSize = 0.01;          // Lot bậc ±1 (bậc ±2,±3… theo cố định/hình học bên dưới)
+input double VirtualGridLotSize = 0.02;          // Lot bậc ±1 (bậc ±2,±3… theo cố định/hình học bên dưới)
 input ENUM_LOT_SCALE VirtualGridLotScale = LOT_GEOMETRIC; // Cố định: mọi bậc cùng lot | Hình học: nhân theo bậc
-input double VirtualGridLotMult = 1.3;           // Hệ số nhân mỗi bậc xa thêm (chỉ khi chọn Hình học)
+input double VirtualGridLotMult = 1.2;           // Hệ số nhân mỗi bậc xa thêm (chỉ khi chọn Hình học)
 input double VirtualGridMaxLot = 3.0;             // Trần lot (0 = chỉ giới hạn của sàn)
 input double VirtualGridTakeProfitPips = 1500.0;  // TP pip cho lệnh market sau khi chờ ảo khớp (0=tắt). Đóng TP -> bổ sung chờ ảo lại
 
@@ -44,7 +44,7 @@ input double VirtualGridTakeProfitPips = 1500.0;  // TP pip cho lệnh market sa
 //+------------------------------------------------------------------+
 input group "=== 4. SESSION — Reset theo mục tiêu lãi ==="
 input bool     EnableSessionProfitReset   = true;   // Bật: đạt mục tiêu thì đóng hết & tính lại gốc/lưới
-input double   SessionProfitTargetUSD     = 40.0;   // Ngưỡng USD: P/L nổi hiện tại + tổng lãi đóng bằng TP trong phiên
+input double   SessionProfitTargetUSD     = 100.0;  // Ngưỡng USD: P/L nổi hiện tại + tổng lãi đóng bằng TP trong phiên
 
 //+------------------------------------------------------------------+
 //| 4.1 TP TỔNG — đạt ngưỡng thì đóng hết lệnh EA & gỡ EA khỏi chart  |
