@@ -5,10 +5,12 @@
 // Allow wrapper versions to reuse this file while overriding #property fields.
 #ifndef VDUALGRID_SKIP_PROPERTIES
 #property copyright "VDualGrid"
-#property version   "3.26"
+#property version   "3.49"
 #property description "VDualGrid: virtual dual-side grid; half-step to level 1; session reset; cumulative total TP stop"
 #endif
-// Telegram: Add https://api.telegram.org to Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL
+// WebRequest: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL:
+//   https://api.telegram.org
+//   https://api.groq.com   (khi bật Groq AI)
 
 #include <Trade\Trade.mqh>
 
@@ -19,7 +21,7 @@ enum ENUM_LOT_SCALE { LOT_FIXED = 0, LOT_GEOMETRIC = 2 };
 //| 1. LƯỚI — khoảng cách bậc & số bậc mỗi phía so với giá gốc        |
 //+------------------------------------------------------------------+
 input group "=== 1. GRID — Lưới giá ==="
-input double GridDistancePips = 1500.0;         // Bước lưới chuẩn (pip). Bậc ±1 cách gốc ½ bước; các bậc kế tiếp cách nhau 1 bước
+input double GridDistancePips = 3000.0;         // Bước lưới chuẩn (pip). Bậc ±1 cách gốc ½ bước; các bậc kế tiếp cách nhau 1 bước
 input int MaxGridLevels = 200;                  // Số bậc phía trên gốc + số bậc phía dưới (tổng 2× mức trên lưới)
 
 //+------------------------------------------------------------------+
@@ -37,7 +39,7 @@ input double VirtualGridLotSize = 0.02;          // Lot bậc ±1 (bậc ±2,±3
 input ENUM_LOT_SCALE VirtualGridLotScale = LOT_GEOMETRIC; // Cố định: mọi bậc cùng lot | Hình học: nhân theo bậc
 input double VirtualGridLotMult = 1.2;           // Hệ số nhân mỗi bậc xa thêm (chỉ khi chọn Hình học)
 input double VirtualGridMaxLot = 3.0;             // Trần lot (0 = chỉ giới hạn của sàn)
-input double VirtualGridTakeProfitPips = 1500.0;  // TP pip cho lệnh market sau khi chờ ảo khớp (0=tắt). Đóng TP -> bổ sung chờ ảo lại
+input double VirtualGridTakeProfitPips = 3000.0;  // TP pip cho lệnh market sau khi chờ ảo khớp (0=tắt). Đóng TP -> bổ sung chờ ảo lại
 
 //+------------------------------------------------------------------+
 //| 4. PHIÊN — reset khi lãi mục tiêu (float + TP đóng trong phiên)   |
@@ -59,9 +61,33 @@ input group "=== 5. NOTIFICATIONS ==="
 input bool EnableResetNotification = true;     // Gửi thông báo MT5 khi EA reset (mục tiêu phiên) hoặc dừng
 
 input group "=== 5.1 NOTIFICATIONS — Telegram ==="
-input bool EnableTelegram = false;              // Gửi cùng nội dung qua Telegram (cần WebRequest)
+input bool EnableTelegram = true;               // Gửi cùng nội dung qua Telegram (cần WebRequest + điền Token/Chat ID)
 input string TelegramBotToken = "";             // Bot Token (@BotFather)
 input string TelegramChatID = "";               // Chat ID nhóm (số âm, ví dụ -1001234567890)
+input bool   TelegramFunAIAnalysis = true;        // Khối AI trên Telegram: có dữ liệu biểu đồ → chỉ Groq; không có biểu đồ → Groq hoặc rule-based
+input bool   EnableTelegramChartAnalysis = true;    // Thống kê nến thời gian thực (CopyRates) kèm tin; phần phân tích biểu đồ bắt buộc qua Groq
+input ENUM_TIMEFRAMES ChartAnalysisTimeframe = PERIOD_CURRENT; // Khung nến (PERIOD_CURRENT = khung chart đang gắn EA)
+input int    ChartAnalysisBars = 64;               // Số nến lấy về (10–500)
+input bool   EnableTelegramChartScreenshot = true;  // Gửi thêm ảnh chart (GIF) chụp đúng lúc gửi tin — chart phải đang mở trên MT5
+input int    TelegramScreenshotWidth = 1200;        // Chiều ngang (320–1920)
+input int    TelegramScreenshotHeight = 800;        // Chiều dọc (240–1080)
+
+input group "=== 5.2 NOTIFICATIONS — Groq AI (Telegram) ==="
+input bool   EnableGroqTelegramAI = true;         // Gọi Groq API khi gửi Telegram + TelegramFunAIAnalysis (cần key + Allow WebRequest)
+input string GroqApiKey = "";                     // API key (console.groq.com/keys). Không chia sẻ file .set — key lộ trong input
+input string GroqModel = "llama-3.3-70b-versatile"; // Model Groq (xem docs Models)
+input int    GroqMaxTokens = 512;                 // Token trả lời (64–2048 chém gió; phân tích có cấu trúc: tối thiểu 2000, tối đa 8192)
+input int    GroqTimeoutMs = 25000;               // Timeout WebRequest (ms), tối thiểu 5000
+input bool   GroqFallbackToLocalFunAI = true;     // Chỉ khi KHÔNG gửi khối biểu đồ cho AI: Groq lỗi → rule-based. Có biểu đồ → luôn chỉ Groq
+input bool   GroqStructuredChartAnalysis = true;    // Bật: tin 2 Groq = báo cáo 4 mục đầy đủ (khi có khối nến đủ dài). Tắt: chém gió + số nến
+
+//+------------------------------------------------------------------+
+//| 6. VỐN — scale lot đầu & mục tiêu reset phiên theo số dư vs gốc   |
+//+------------------------------------------------------------------+
+input group "=== 6. CAPITAL — Scale theo vốn (gốc = số dư lúc gắn EA) ==="
+input bool   EnableCapitalBasedScaling = true;  // Bật: lot bậc ±1 & SessionProfitTargetUSD nhân theo số dư hiện tại (nạp/rút → đổi hệ số theo input; còn % P/L trong tin vẫn tính trên gốc gắn EA)
+input double CapitalGainScalePercent   = 80.0;  // X% (0–100). Vốn +100% vs gốc → mult chỉ áp X% phần tỷ lệ (50→1.5; 100→2). >100 bị giới hạn 100
+input double CapitalScaleMaxBoostPercent = 100.0; // Trần % tăng tối đa so với gốc (100 = mult ≤ 2; 0 = không vượt ×1). Dù vốn tăng bao nhiêu cũng không vượt 1+this/100
 
 //--- Global variables
 CTrade trade;
@@ -75,7 +101,7 @@ double lastTickAsk = 0.0;
 // Session TP-net — chỉ đóng TP, không pool cân bằng.
 double sessionClosedProfit = 0.0;               // Session: TP profit in session. Reset on EA reset.
 datetime lastResetTime = 0;                     // Last reset time (avoid double-count from orders just closed on reset)
-double attachBalance = 0.0;                    // Balance when EA first attached: never reset. Reference for trading-equity view (không cập nhật khi nạp/rút sau đó)
+double attachBalance = 0.0;                    // Số dư lúc gắn EA lần đầu — không cập nhật khi nạp/rút; dùng làm gốc % P/L trong tin (khác với nhánh scale vốn nhóm 6)
 datetime eaAttachTime = 0;                     // OnInit time: chỉ cộng deal OUT vào eaCumulativeTradingPL khi deal >= thời điểm này
 double eaCumulativeTradingPL = 0.0;            // Tổng (profit+swap+comm) deal OUT cùng magic symbol từ lúc gắn EA — không nạp/rút
 double sessionPeakTradingEquityView = 0.0;   // Cao nhất (attachBalance + eaCumulativeTradingPL + float magic) trong phiên lưới
@@ -90,6 +116,7 @@ datetime sessionStartTime = 0;                // Current session: starts when EA
 double sessionStartBalance = 0.0;             // Balance at session start (for info panel and session %)
 int MagicAA = 0;                              // Strategy magic (= MagicNumber in OnInit)
 double g_accumResetSessionPL = 0.0;           // TP tổng: cộng dồn effectiveSession mỗi lần reset phiên (mục 4)
+string g_groqLastErrorDetail = "";            // Lỗi Groq lần gần nhất (rút gọn, hiển thị Telegram / log)
 
 //--- Sau khi chờ ảo khớp market: chặn bổ sung lại chờ ảo cùng phía/mức cho tới khi vị thế hiện hoặc hết hạn
 #define VPGRID_VIRTUAL_EXEC_COOLDOWN_SEC 5
@@ -464,6 +491,70 @@ double GetTradingEquityViewUSD()
 }
 
 //+------------------------------------------------------------------+
+//| X% dùng thực tế: clamp [0, 100] (input > 100 không có hiệu lực thêm). |
+//+------------------------------------------------------------------+
+double CapitalGainScalePercentEffective()
+{
+   double x = CapitalGainScalePercent;
+   if(x < 0.0) x = 0.0;
+   if(x > 100.0) x = 100.0;
+   return x;
+}
+
+//+------------------------------------------------------------------+
+//| Trần % tăng tối đa: clamp [0, 1e6] (mult không vượt 1 + value/100). |
+//+------------------------------------------------------------------+
+double CapitalScaleMaxBoostPercentEffective()
+{
+   double m = CapitalScaleMaxBoostPercent;
+   if(m < 0.0) m = 0.0;
+   if(m > 1000000.0) m = 1000000.0;
+   return m;
+}
+
+//+------------------------------------------------------------------+
+//| Gốc vốn = attachBalance (số dư khi gắn EA lần đầu, không đổi).    |
+//| mult = 1 + (C/R - 1) * (X/100), rồi min(..., 1 + trần%/100).      |
+//+------------------------------------------------------------------+
+double GetCapitalScaleMultiplier()
+{
+   if(!EnableCapitalBasedScaling)
+      return 1.0;
+   double xEff = CapitalGainScalePercentEffective();
+   if(attachBalance <= 0.0 || xEff <= 0.0)
+      return 1.0;
+   double C = AccountInfoDouble(ACCOUNT_BALANCE);
+   if(C <= 0.0)
+      return 1.0;
+   double mult = 1.0 + (C / attachBalance - 1.0) * (xEff / 100.0);
+   double multCap = 1.0 + CapitalScaleMaxBoostPercentEffective() / 100.0;
+   if(multCap < 0.01)
+      multCap = 0.01;
+   if(mult > multCap)
+      mult = multCap;
+   if(mult < 0.01)
+      mult = 0.01;
+   return mult;
+}
+
+//+------------------------------------------------------------------+
+double GetScaledSessionProfitTargetUSD()
+{
+   if(SessionProfitTargetUSD <= 0.0)
+      return 0.0;
+   double t = SessionProfitTargetUSD * GetCapitalScaleMultiplier();
+   if(t < 0.01)
+      t = 0.01;
+   return t;
+}
+
+//+------------------------------------------------------------------+
+double GetEffectiveVirtualGridBaseLot()
+{
+   return VirtualGridLotSize * GetCapitalScaleMultiplier();
+}
+
+//+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
@@ -497,12 +588,31 @@ int OnInit()
 
    basePrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    InitializeGridLevels();
-   if(EnableResetNotification)
-      SendResetNotification("EA started");
+   if(EnableResetNotification || EnableTelegram)
+      SendResetNotification("EA đã khởi động");
    Print("========================================");
-   Print("VDualGrid started. Session profit: 0 USD (open + closed from now)");
+   Print("VDualGrid đã chạy. Lãi phiên: 0 USD (từ đây: mở + đã đóng trong phiên)");
+   if(EnableTelegram)
+      Print("VDualGrid: Telegram WebRequest — thêm https://api.telegram.org vào Tools → Options → Expert Advisors → Allow WebRequest.");
+   if(EnableTelegram && EnableTelegramChartScreenshot)
+      Print("VDualGrid: ảnh chart Telegram — ChartScreenShot cần chart EA đang gắn hiển thị; Strategy Tester thường không chụp được.");
+   if(EnableGroqTelegramAI)
+      Print("VDualGrid: Groq AI — thêm https://api.groq.com vào Allow WebRequest; không chia sẻ file .set chứa GroqApiKey.");
+   if(EnableTelegram && EnableTelegramChartAnalysis && TelegramFunAIAnalysis
+      && (!EnableGroqTelegramAI || StringLen(GroqApiKey) < 15))
+      Print("VDualGrid: Phân tích biểu đồ thời gian thực trên Telegram chỉ chạy qua Groq — bật EnableGroqTelegramAI và nhập GroqApiKey.");
    Print("Symbol: ", _Symbol, " | Base: ", basePrice, " | Grid: ", GridDistancePips, " pips | Levels: ", ArraySize(gridLevels));
    Print("Chờ ảo: mỗi bậc lưới 1 Buy+1 Sell (Stop/Limit theo vị trí giá) | mức=", ArraySize(gridLevels), " | lot L1=", GetLotForLevel(ORDER_TYPE_BUY_STOP, 1));
+   if(EnableCapitalBasedScaling)
+   {
+      double xEff = CapitalGainScalePercentEffective();
+      double maxB = CapitalScaleMaxBoostPercentEffective();
+      Print("Scale vốn: BẬT | gốc=", DoubleToString(attachBalance, 2), " USD | X% hiệu lực=", DoubleToString(xEff, 1), " (input ", DoubleToString(CapitalGainScalePercent, 1), ", max 100) | trần tăng=", DoubleToString(maxB, 1), "% (mult≤", DoubleToString(1.0 + maxB / 100.0, 4), ") | mult=", DoubleToString(GetCapitalScaleMultiplier(), 4), " | mục tiêu phiên (scale)=", DoubleToString(GetScaledSessionProfitTargetUSD(), 2), " USD");
+      if(CapitalGainScalePercent > 100.0)
+         Print("VDualGrid: CapitalGainScalePercent > 100 → dùng 100.");
+      if(CapitalScaleMaxBoostPercent < 0.0 || CapitalScaleMaxBoostPercent > 1000000.0)
+         Print("VDualGrid: CapitalScaleMaxBoostPercent ngoài [0, 1e6] → clamp.");
+   }
    Print("========================================");
    ManageGridOrders();
    return(INIT_SUCCEEDED);
@@ -521,9 +631,9 @@ void OnDeinit(const int reason)
    if(EnableResetNotification || EnableTelegram)
    {
       UpdateSessionStatsForNotification();
-      SendResetNotification("EA stopped (reason: " + IntegerToString(reason) + ")");
+      SendResetNotification("EA đã dừng (mã lý do: " + IntegerToString(reason) + ")");
    }
-   Print("VDualGrid stopped. Reason: ", reason);
+   Print("VDualGrid đã dừng. Mã lý do: ", reason);
 }
 
 //+------------------------------------------------------------------+
@@ -550,7 +660,8 @@ void OnTick()
    if(EnableSessionProfitReset && SessionProfitTargetUSD > 0)
    {
       double effectiveSession = sessionClosedProfit + floating;
-      if(effectiveSession >= SessionProfitTargetUSD)
+      double sessionTargetScaled = GetScaledSessionProfitTargetUSD();
+      if(effectiveSession >= sessionTargetScaled)
       {
          double tpSnap = sessionClosedProfit;
          double flSnap = floating;
@@ -564,7 +675,7 @@ void OnTick()
                GlobalVariableSet(VDualGridTotalStopGvKey(), (double)TimeCurrent());
                Print("VDualGrid: TP tổng (cộng dồn các lần reset phiên) ", DoubleToString(g_accumResetSessionPL, 2), " >= ", DoubleToString(TotalProfitStopUSD, 2), " USD — đóng hết & gỡ EA. Xóa GV \"", VDualGridTotalStopGvKey(), "\" để chạy lại.");
                if(EnableResetNotification || EnableTelegram)
-                  SendResetNotification("Total profit stop — accumulated session resets >= target");
+                  SendResetNotification("Dừng TP tổng — tổng lãi các lần reset phiên đạt mục tiêu");
                ExpertRemove();
                return;
             }
@@ -574,11 +685,16 @@ void OnTick()
          sessionClosedProfit = 0.0;
          basePrice = SymbolInfoDouble(_Symbol, SYMBOL_BID);
          InitializeGridLevels();
-         Print("Session profit target reached: ", DoubleToString(effectiveSession, 2), " (TP ", DoubleToString(tpSnap, 2), " + float ", DoubleToString(flSnap, 2), ") >= ", DoubleToString(SessionProfitTargetUSD, 2), ". Reset EA, new base = ", basePrice);
+         {
+            double balNow = AccountInfoDouble(ACCOUNT_BALANCE);
+            double capPct = (attachBalance > 0.0) ? ((balNow / attachBalance - 1.0) * 100.0) : 0.0;
+            Print("Đạt mục tiêu lãi phiên: ", DoubleToString(effectiveSession, 2), " (TP ", DoubleToString(tpSnap, 2), " + treo ", DoubleToString(flSnap, 2), ") >= ", DoubleToString(sessionTargetScaled, 2), " USD (nhập ", DoubleToString(SessionProfitTargetUSD, 2), " × mult ", DoubleToString(GetCapitalScaleMultiplier(), 4), "). Reset EA, giá gốc mới = ", basePrice);
+            Print("VDualGrid: vốn vs gốc gắn EA: ", DoubleToString(capPct, 2), "% (gốc ", DoubleToString(attachBalance, 2), " → hiện ", DoubleToString(balNow, 2), " USD)");
+         }
          if(TotalProfitStopUSD > 0.0)
             Print("TP tổng (dồn): ", DoubleToString(g_accumResetSessionPL, 2), " / ", DoubleToString(TotalProfitStopUSD, 2), " USD");
          if(EnableResetNotification || EnableTelegram)
-            SendResetNotification("Session profit target reached - reset");
+            SendResetNotification("Đạt mục tiêu lãi phiên — reset lưới");
          ManageGridOrders();
          return;
       }
@@ -644,48 +760,1071 @@ string UrlEncodeForTelegram(const string s)
    for(int i = 0; i < StringLen(s); i++)
    {
       ushort c = StringGetCharacter(s, i);
-      if(c == ' ') result += "+";
-      else if(c == '\n') result += "%0A";
-      else if(c == '\r') result += "%0D";
-      else if(c == '&') result += "%26";
-      else if(c == '=') result += "%3D";
-      else if(c == '+') result += "%2B";
-      else if(c == '%') result += "%25";
-      else if(c >= 32 && c < 127) result += CharToString((uchar)c);
-      else result += "%" + StringFormat("%02X", c);
+      if(c == ' ')
+         result += "+";
+      else if(c == '\n')
+         result += "%0A";
+      else if(c == '\r')
+         result += "%0D";
+      else if(c == '&')
+         result += "%26";
+      else if(c == '=')
+         result += "%3D";
+      else if(c == '+')
+         result += "%2B";
+      else if(c == '%')
+         result += "%25";
+      else if(c >= 32 && c < 127)
+         result += CharToString((uchar)c);
+      else
+      {
+         // UTF-8 rồi %HH từng byte (Telegram yêu cầu; %02X từ code unit 16-bit trước đây gây HTTP 400 với tiếng Việt)
+         string oneChar = StringSubstr(s, i, 1);
+         uchar bytes[];
+         int nb = StringToCharArray(oneChar, bytes, 0, WHOLE_ARRAY, CP_UTF8);
+         if(nb <= 0)
+            continue;
+         int useLen = nb;
+         if(useLen > 0 && bytes[useLen - 1] == 0)
+            useLen--;
+         for(int k = 0; k < useLen; k++)
+            result += "%" + StringFormat("%02X", (uint)bytes[k]);
+      }
    }
    return result;
 }
 
 //+------------------------------------------------------------------+
-//| Send message to Telegram via Bot. Add https://api.telegram.org to Allow WebRequest. |
+//| Ghép chuỗi UTF-8 / byte nhị phân vào body POST (multipart).       |
+//+------------------------------------------------------------------+
+void TelegramPostAppendUtf8(char &post[], int &postLen, const string s)
+{
+   uchar u[];
+   int n = StringToCharArray(s, u, 0, WHOLE_ARRAY, CP_UTF8);
+   int L = n;
+   if(L > 0 && u[L - 1] == 0)
+      L--;
+   int old = postLen;
+   ArrayResize(post, old + L);
+   for(int i = 0; i < L; i++)
+      post[old + i] = (char)u[i];
+   postLen = old + L;
+}
+
+void TelegramPostAppendBytes(char &post[], int &postLen, const uchar &data[], const int dataLen)
+{
+   int old = postLen;
+   ArrayResize(post, old + dataLen);
+   for(int i = 0; i < dataLen; i++)
+      post[old + i] = (char)data[i];
+   postLen = old + dataLen;
+}
+
+//+------------------------------------------------------------------+
+//| Chụp chart hiện tại (GIF) + POST Telegram sendPhoto (multipart).  |
+//+------------------------------------------------------------------+
+void SendTelegramChartScreenshotIfEnabled(const string caption)
+{
+   if(!EnableTelegram || !EnableTelegramChartScreenshot)
+      return;
+   if(StringLen(TelegramBotToken) < 10 || StringLen(TelegramChatID) < 5)
+      return;
+
+   int w = TelegramScreenshotWidth;
+   int h = TelegramScreenshotHeight;
+   if(w < 320)
+      w = 320;
+   if(w > 1920)
+      w = 1920;
+   if(h < 240)
+      h = 240;
+   if(h > 1080)
+      h = 1080;
+
+   const string shotName = "vdualgrid_chart_shot.gif";
+   ResetLastError();
+   if(!ChartScreenShot(0, shotName, w, h, ALIGN_RIGHT))
+   {
+      Print("VDualGrid ảnh chart: ChartScreenShot thất bại (err ", GetLastError(), ") — mở chart gắn EA hoặc thử ngoài Strategy Tester.");
+      return;
+   }
+
+   int fh = FileOpen(shotName, FILE_READ | FILE_BIN);
+   if(fh == INVALID_HANDLE)
+   {
+      Print("VDualGrid ảnh chart: không mở được ", shotName, " err ", GetLastError());
+      return;
+   }
+   ulong sz64 = FileSize(fh);
+   if(sz64 < 32 || sz64 > 10485760UL)
+   {
+      FileClose(fh);
+      FileDelete(shotName);
+      Print("VDualGrid ảnh chart: kích thước file không hợp lệ: ", sz64);
+      return;
+   }
+   int sz = (int)sz64;
+   uchar gif[];
+   ArrayResize(gif, sz);
+   uint nread = FileReadArray(fh, gif, 0, sz);
+   FileClose(fh);
+   FileDelete(shotName);
+   if(nread != (uint)sz)
+   {
+      Print("VDualGrid ảnh chart: đọc file thiếu byte (", nread, "/", sz, ").");
+      return;
+   }
+
+   string bnd = "VDG" + IntegerToString((long)TimeCurrent()) + IntegerToString(GetTickCount());
+   string ctype = "multipart/form-data; boundary=" + bnd;
+
+   char post[];
+   int plen = 0;
+   TelegramPostAppendUtf8(post, plen, "--" + bnd + "\r\n");
+   TelegramPostAppendUtf8(post, plen, "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n");
+   TelegramPostAppendUtf8(post, plen, TelegramChatID + "\r\n");
+
+   string cap = caption;
+   if(StringLen(cap) > 1024)
+      cap = StringSubstr(cap, 0, 1021) + "...";
+   if(StringLen(cap) > 0)
+   {
+      TelegramPostAppendUtf8(post, plen, "--" + bnd + "\r\n");
+      TelegramPostAppendUtf8(post, plen, "Content-Disposition: form-data; name=\"caption\"\r\n\r\n");
+      TelegramPostAppendUtf8(post, plen, cap + "\r\n");
+   }
+
+   TelegramPostAppendUtf8(post, plen, "--" + bnd + "\r\n");
+   TelegramPostAppendUtf8(post, plen, "Content-Disposition: form-data; name=\"photo\"; filename=\"chart.gif\"\r\n");
+   TelegramPostAppendUtf8(post, plen, "Content-Type: image/gif\r\n\r\n");
+   TelegramPostAppendBytes(post, plen, gif, sz);
+   TelegramPostAppendUtf8(post, plen, "\r\n--" + bnd + "--\r\n");
+
+   string url = "https://api.telegram.org/bot" + TelegramBotToken + "/sendPhoto";
+   string hdr = "Content-Type: " + ctype + "\r\nContent-Length: " + IntegerToString(plen) + "\r\n";
+
+   char result[];
+   string resultHeaders;
+   ResetLastError();
+   int res = WebRequest("POST", url, hdr, 45000, post, result, resultHeaders);
+   if(res != 200)
+   {
+      string resp = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+      Print("Telegram sendPhoto: HTTP ", res, " GetLastError=", GetLastError(), " | ", StringSubstr(resp, 0, 700));
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Escape chuỗi đưa vào JSON (Groq).                                 |
+//+------------------------------------------------------------------+
+string GroqJsonEscapeString(const string s)
+{
+   string r = "";
+   for(int i = 0; i < StringLen(s); i++)
+   {
+      ushort c = StringGetCharacter(s, i);
+      if(c == '\\')
+         r += "\\\\";
+      else if(c == '"')
+         r += "\\\"";
+      else if(c == '\n')
+         r += "\\n";
+      else if(c == '\r')
+         r += "\\r";
+      else if(c == '\t')
+         r += "\\t";
+      else if(c < 32)
+         r += "\\u" + StringFormat("%04x", (uint)c);
+      else
+         r += StringSubstr(s, i, 1);
+   }
+   return r;
+}
+
+//+------------------------------------------------------------------+
+int GroqHexDigit(const int ch)
+{
+   if(ch >= '0' && ch <= '9')
+      return ch - '0';
+   if(ch >= 'a' && ch <= 'f')
+      return ch - 'a' + 10;
+   if(ch >= 'A' && ch <= 'F')
+      return ch - 'A' + 10;
+   return -1;
+}
+
+//+------------------------------------------------------------------+
+//| Một code unit UTF-16 (BMP) → ký tự trong string (parse JSON \\u).  |
+//+------------------------------------------------------------------+
+string GroqAppendCodeUnit(const ushort cu)
+{
+   string t = " ";
+   StringSetCharacter(t, 0, cu);
+   return t;
+}
+
+//+------------------------------------------------------------------+
+//| Đọc chuỗi JSON sau dấu " mở (hỗ trợ \\n \\uXXXX).                    |
+//+------------------------------------------------------------------+
+string GroqReadJsonStringBody(const string json, int i, int &outEndPos)
+{
+   outEndPos = i;
+   int len = StringLen(json);
+   string out = "";
+   while(i < len)
+   {
+      ushort ch = StringGetCharacter(json, i);
+      if(ch == '\\')
+      {
+         i++;
+         if(i >= len)
+            break;
+         ushort n = StringGetCharacter(json, i);
+         if(n == 'n')
+            out += "\n";
+         else if(n == 'r')
+            out += "\r";
+         else if(n == 't')
+            out += "\t";
+         else if(n == '"' || n == '\\' || n == '/')
+            out += CharToString((uchar)n);
+         else if(n == 'u' && i + 4 < len)
+         {
+            int code = 0;
+            bool ok = true;
+            for(int h = 1; h <= 4; h++)
+            {
+               int v = GroqHexDigit(StringGetCharacter(json, i + h));
+               if(v < 0)
+               {
+                  ok = false;
+                  break;
+               }
+               code = code * 16 + v;
+            }
+            if(ok && code > 1 && code <= 0xFFFF)
+               out += GroqAppendCodeUnit((ushort)code);
+            i += 4;
+         }
+         else
+            out += CharToString((uchar)n);
+      }
+      else if(ch == '"')
+      {
+         outEndPos = i + 1;
+         return out;
+      }
+      else
+         out += StringSubstr(json, i, 1);
+      i++;
+   }
+   outEndPos = len;
+   return out;
+}
+
+//+------------------------------------------------------------------+
+//| Rút thông điệp lỗi từ JSON body Groq/OpenAI.                       |
+//+------------------------------------------------------------------+
+string GroqExtractApiErrorBrief(const string body)
+{
+   if(StringLen(body) < 10)
+      return "";
+   int mp = StringFind(body, "\"message\"");
+   if(mp < 0)
+      return StringSubstr(body, 0, 220);
+   int col = StringFind(body, ":", mp);
+   if(col < 0)
+      return "";
+   int i = col + 1;
+   int len = StringLen(body);
+   while(i < len)
+   {
+      ushort w = StringGetCharacter(body, i);
+      if(w == ' ' || w == '\t' || w == '\n' || w == '\r')
+      {
+         i++;
+         continue;
+      }
+      break;
+   }
+   if(i >= len)
+      return "";
+   ushort c0 = StringGetCharacter(body, i);
+   if(c0 == '"')
+   {
+      int endp = 0;
+      return GroqReadJsonStringBody(body, i + 1, endp);
+   }
+   int semi = i;
+   while(semi < len && StringGetCharacter(body, semi) != ',' && StringGetCharacter(body, semi) != '}')
+      semi++;
+   return StringSubstr(body, i, semi - i);
+}
+
+//+------------------------------------------------------------------+
+//| Ghi lỗi Groq gần nhất (một dòng, an toàn cho Telegram).            |
+//+------------------------------------------------------------------+
+void GroqSetLastError(const string detail)
+{
+   string d = detail;
+   StringReplace(d, "\r", " ");
+   StringReplace(d, "\n", " ");
+   if(StringLen(d) > 420)
+      d = StringSubstr(d, 0, 417) + "...";
+   g_groqLastErrorDetail = d;
+}
+
+//+------------------------------------------------------------------+
+//| Lấy nội dung assistant từ JSON chat/completions (UTF-8 đã decode). |
+//+------------------------------------------------------------------+
+string GroqExtractContentOrRefusalAfter(const string json, const int searchFrom, const int searchLimit)
+{
+   int len = StringLen(json);
+   int lim = searchFrom + searchLimit;
+   if(lim > len)
+      lim = len;
+   int cc = StringFind(json, "\"content\"", searchFrom);
+   if(cc < 0 || cc >= lim)
+   {
+      int rf = StringFind(json, "\"refusal\"", searchFrom);
+      if(rf >= 0 && rf < lim)
+         cc = rf;
+   }
+   if(cc < 0 || cc >= lim)
+      return "";
+   int colon = StringFind(json, ":", cc);
+   if(colon < 0 || colon >= lim)
+      return "";
+   int i = colon + 1;
+   while(i < len && i < lim)
+   {
+      ushort w = StringGetCharacter(json, i);
+      if(w == ' ' || w == '\t' || w == '\n' || w == '\r')
+      {
+         i++;
+         continue;
+      }
+      break;
+   }
+   if(i >= len)
+      return "";
+   ushort first = StringGetCharacter(json, i);
+   if(first == '"')
+   {
+      int endp = 0;
+      return GroqReadJsonStringBody(json, i + 1, endp);
+   }
+   if(first == '[')
+   {
+      int tpos = StringFind(json, "\"text\"", i);
+      if(tpos < 0 || tpos > i + 12000 || tpos >= lim)
+         return "";
+      int tcol = StringFind(json, ":", tpos);
+      if(tcol < 0)
+         return "";
+      int j = tcol + 1;
+      while(j < len)
+      {
+         ushort w2 = StringGetCharacter(json, j);
+         if(w2 == ' ' || w2 == '\t' || w2 == '\n' || w2 == '\r')
+         {
+            j++;
+            continue;
+         }
+         break;
+      }
+      if(j < len && StringGetCharacter(json, j) == '"')
+      {
+         int endp2 = 0;
+         return GroqReadJsonStringBody(json, j + 1, endp2);
+      }
+      return "";
+   }
+   if(first == 'n' && i + 3 < len && StringGetCharacter(json, i + 1) == 'u'
+      && StringGetCharacter(json, i + 2) == 'l' && StringGetCharacter(json, i + 3) == 'l')
+      return "";
+   return "";
+}
+
+//+------------------------------------------------------------------+
+//| Lấy nội dung assistant từ JSON chat/completions (UTF-8 đã decode). |
+//+------------------------------------------------------------------+
+string GroqExtractAssistantContent(const string json)
+{
+   if(StringLen(json) < 30)
+      return "";
+   int chPos = StringFind(json, "\"choices\"");
+   if(chPos < 0)
+      return "";
+   int msgPos = StringFind(json, "\"message\"", chPos);
+   if(msgPos < 0)
+      return "";
+   string out = GroqExtractContentOrRefusalAfter(json, msgPos, 50000);
+   StringTrimLeft(out);
+   StringTrimRight(out);
+   if(StringLen(out) >= 1)
+      return out;
+   return GroqExtractContentOrRefusalAfter(json, chPos, 150000);
+}
+
+
+//+------------------------------------------------------------------+
+//| Chọn 1 trong n chuỗi theo seed (phân tích "AI" vui, không gọi mạng). |
+//+------------------------------------------------------------------+
+string FunAI_Pick5(const int seed, const string s0, const string s1, const string s2, const string s3, const string s4)
+{
+   int i = seed % 5;
+   if(i < 0) i += 5;
+   if(i == 0) return s0;
+   if(i == 1) return s1;
+   if(i == 2) return s2;
+   if(i == 3) return s3;
+   return s4;
+}
+
+//+------------------------------------------------------------------+
+//| Khối phân tích vui cho Telegram (if/else + RNG — không phải LLM).   |
+//+------------------------------------------------------------------+
+string BuildFunAIAnalysisTelegram(const string reason, const double pct, const double maxLossUSD,
+                                  const double bal, const double attachBal, const string chartCompactVi)
+{
+   uint u = (uint)TimeCurrent() + (uint)(StringLen(reason) * 131U) + (uint)(MathAbs(pct) * 17.0);
+   int s0 = (int)(u % 5);
+   int s1 = (int)((u / 5U) % 5);
+   int s2 = (int)((u / 25U) % 5);
+
+   string out = "Phân tích AI\n\n";
+
+   string ev = "";
+   if(StringFind(reason, "mục tiêu lãi phiên") >= 0)
+      ev = FunAI_Pick5(s0,
+         "Ding ding! Đủ tiền mục tiêu phiên rồi — EA dọn bàn cũ, kê bàn mới, thị trường ơi cho xin tí drama tiếp theo!",
+         "Ê hê, phiên này ăn đủ — reset lưới kiểu 'tính tiền xong nhảy quán khác', chúc vé may mắn vòng sau nha!",
+         "Logic thắng cảm xúc hiếm lắm đó — đừng khoe Facebook quá, chart hay ghen tị lắm.",
+         "Mục tiêu phiên chạm đích: như chạy bộ xong được chai nước — uống mát, nghỉ quéo rồi chạy tiếp.",
+         "Telegram *ting* một cái là biến vui: TP phiên okela, đi ăn mừng chưa bạn hiền?");
+   else if(StringFind(reason, "Dừng TP tổng") >= 0)
+      ev = FunAI_Pick5(s0,
+         "Boss cuối gục! Tổng lãi dồn đủ ngưỡng — cinematic ending, đóng máy, hết phim phần này!",
+         "Combo TP tổng full — như hết season Netflix: đừng spoil cho thị trường nha.",
+         "Mình tặng 10/10 cho độ kiên nhẫn dồn phiên — giờ đi chill hoặc code input mới cho máu.",
+         "Bánh kem trong tủ đang gọi tên bạn — cớ hợp lý để ăn ngọt, không cần họp hành.",
+         "Hệ thống: xong việc. Bạn: hehe. Chart: im thin thít. Telegram: hân hạnh phục vụ.");
+   else if(StringFind(reason, "EA đã dừng") >= 0)
+      ev = FunAI_Pick5(s0,
+         "Tạm biệt nha — EA về tắm rửa, RAM đi ngủ sớm, tick history vẫn flex trong quá khứ.",
+         "Hết show! Đèn tắt, khán giả vỗ tay (hoặc ngủ gật), cả làng đi ăn mì.",
+         "OnDeinit = 'hẹn gặp lại sau khi bấm attach' — đừng buồn như chia tay người yêu, nó chỉ là code thôi.",
+         "Coi log lý do dừng nha — đừng đổ tại Wi-Fi hàng xóm trừ khi thật sự lag.",
+         "Độ ẩm phòng vô tội… trừ khi bạn đánh đổ nước lên máy, lúc đó sorry bro.");
+   else if(StringFind(reason, "EA đã khởi động") >= 0)
+      ev = FunAI_Pick5(s0,
+         "Lên sóng rùi nè! Grid căng sẵn, thị trường đang make-up hậu trường — mình cầm popcorn chờ hạ cánh.",
+         "Từ giờ drama là của giá + lot; nút nguồn chỉ để bật quạt thôi bạn hiền ơi.",
+         "Margin theo dõi như trend TikTok — cười nhẹ thôi, đừng FOMO quá tay.",
+         "Hệ thống online — cà phê tuỳ gu, kỷ luật thì pha nóng hổi mới ngon!",
+         "Team tự động đã join party: chart chưa giàu ngay nhưng đã có đồng minh rồi đó.");
+   else
+      ev = FunAI_Pick5(s0,
+         "Lý do hơi ngớ ngẩn? Không sa, meme cũng cần nguyên liệu — mình vẫn bắt trend cho đủ khung hình.",
+         "Không gắn nhãn là để tự do nghệ thuật — EA xin một câu triết lý fake cho đẹp story.",
+         "Phân tích đa chiều = nhìn một chiều mà tỏ vẻ sâu — có biến là đủ content.",
+         "Không hiểu lý do thì uống nước, F5 chart, thở — survival kit của trader đó bạn ơi.",
+         "AI trong đầu mình gật gù như hiểu hết — đừng tin, nó cũng đang Google dở.");
+
+   string pl = "";
+   if(pct >= 5.0)
+      pl = "P/L giao dịch vs gắn EA: +" + DoubleToString(pct, 2) + "%. " + FunAI_Pick5(s1,
+            "Woohoo xanh bụi! Thắt dây an toàn cảm xúc — tàu lượn lên dốc hét được nhưng đừng buông tay.",
+            "Số đẹp phết — mai chart đổi kịch như đạo diễn uống quá caffeine, coi chừng plot twist.",
+            "Đừng tưởng skill vĩnh viễn — đôi khi chỉ là sóng cho mượn, trả hồi còn lại.",
+            "Kiêu nhẹ thôi nha — bot không khoe được, bạn cũng đừng khoe hộ nó quá.",
+            "Chúc mừng! Giai đoạn dễ tự tin quá đà — bình tĩnh như ninja đi gác.");
+   else if(pct > 0.05)
+      pl = "P/L giao dịch vs gắn EA: +" + DoubleToString(pct, 2) + "%. " + FunAI_Pick5(s1,
+            "Xanh nhạt matcha vibe — chill chill, chưa cần chạy vào phòng điều hành hò hét.",
+            "Lãi tí cũng là lãi — lãi kép thích người không drama, drama để hội trưởng drama lo.",
+            "Thắng nhẹ: đủ tự tin, chưa đủ màn hình cong — tiết kiệm ví, eco-friendly.",
+            "Máy êm như xe đủ xăng — chưa nổ nhưng có ga là được.",
+            "Vi mô ổn — vĩ mô thi riêng, coi như môn phụ kế bên.");
+   else if(pct >= -0.05)
+      pl = "P/L giao dịch vs gắn EA: " + DoubleToString(pct, 2) + "%. " + FunAI_Pick5(s1,
+            "Mode Schrödinger: thắng hay thua tùy mood — chart không nói, chỉ nháy mắt.",
+            "Hòa vốn cảm xúc: P/L im lặng nhưng tâm lý đang rap battle.",
+            "Phẳng như ly soda quên nắp — không sai, chỉ hơi chán tí.",
+            "Vùng F5 thiền: hoặc tĩnh tâm hoặc spam refresh như game idle.",
+            "Không lên không xuống — ít nhất log có twist, đọc cho đỡ buồn ngủ.");
+   else
+      pl = "P/L giao dịch vs gắn EA: " + DoubleToString(pct, 2) + "%. " + FunAI_Pick5(s1,
+            "Đỏ hơi chói — coi như gym free cho khả năng chịu đựng, không tính phí PT.",
+            "Drawdown = học phí; không học được gì thì coi như Netflix buồn nhưng vẫn có phụ đề.",
+            "Số âm không định nghĩa con người bạn — chỉ định nghĩa đoạn curve đang vẽ dở.",
+            "Thở + check risk; đừng capslock cãi chart — chart không đọc comment đâu.",
+            "Ôm ấm ảo: sóng qua hết drama, EA vẫn chạy input bạn gõ — team work đó!");
+
+   string dd = "";
+   if(maxLossUSD > 1.0)
+      dd = "Biên độ sụt giảm (equity EA) ~ " + DoubleToString(maxLossUSD, 2) + " USD. " + FunAI_Pick5(s2,
+            "Tàu lượn có đoạn lao — dây an toàn vốn siết chặt nha bạn hiền.",
+            "Số này mà giật mình thì lot có thể đang biên kịch kinh dị — cân nhắc rating.",
+            "Đỉnh đáy chỉ spoiler quá khứ — không leak tập sau.",
+            "Drawdown bự = dataset; bình tĩnh = giảm học phí, panic = mua vé VIP.",
+            "Thị trường: 'cầm hộ biến động'. Bạn: 'mình giữ risk như giữ crush.'");
+   else
+      dd = "Drawdown nhỏ xíu — EA mới tập đi hoặc bạn đi dạo trên ray tàu lượn cho vui.";
+
+   string balNote = "";
+   if(attachBal > 0.0 && bal > attachBal * 1.01)
+      balNote = "\nSố dư broker nhảy hơn gốc gắn EA — có thể vừa nạp, đừng tưởng skill +1000 overnight nha.";
+   else if(attachBal > 0.0 && bal < attachBal * 0.99)
+      balNote = "\nSố dư tụt hơn gốc — có thể rút hoặc lệnh làm việc, soi ledger kỹ, đừng chỉ soi meme.";
+
+   string chartNote = "";
+   if(StringLen(chartCompactVi) > 3)
+      chartNote = "\n\nGợi nhanh chart: " + chartCompactVi + " — vibe nến cho đủ màu, không phải lệnh nha.";
+
+   return out + ev + "\n\n" + pl + "\n" + dd + balNote + chartNote;
+}
+
+//+------------------------------------------------------------------+
+//| Chuẩn hoá model id (tránh xuống dòng / dấu ngoặc phá JSON).       |
+//+------------------------------------------------------------------+
+string GroqModelTrim()
+{
+   string m = GroqModel;
+   StringTrimLeft(m);
+   StringTrimRight(m);
+   StringReplace(m, "\"", "");
+   StringReplace(m, "\r", "");
+   StringReplace(m, "\n", "");
+   if(StringLen(m) < 3)
+      m = "llama-3.3-70b-versatile";
+   return m;
+}
+
+//+------------------------------------------------------------------+
+//| Giới hạn độ dài đoạn AI (Telegram ~4096 ký tự cả tin).            |
+//+------------------------------------------------------------------+
+string GroqTelegramAiTruncate(const string s, const int maxLen)
+{
+   if(StringLen(s) <= maxLen)
+      return s;
+   int cut = maxLen - 50;
+   if(cut < 80)
+      cut = 80;
+   return StringSubstr(s, 0, cut) + "\n...(đã cắt bớt cho Telegram)";
+}
+
+//+------------------------------------------------------------------+
+//| Nhãn khung thời gian ngắn (VN context).                            |
+//+------------------------------------------------------------------+
+string PeriodToShortLabelVi(const ENUM_TIMEFRAMES tf)
+{
+   ENUM_TIMEFRAMES t = tf;
+   if(t == PERIOD_CURRENT)
+      t = (ENUM_TIMEFRAMES)Period();
+   switch(t)
+   {
+      case PERIOD_M1:  return "M1";
+      case PERIOD_M2:  return "M2";
+      case PERIOD_M3:  return "M3";
+      case PERIOD_M4:  return "M4";
+      case PERIOD_M5:  return "M5";
+      case PERIOD_M6:  return "M6";
+      case PERIOD_M10: return "M10";
+      case PERIOD_M12: return "M12";
+      case PERIOD_M15: return "M15";
+      case PERIOD_M20: return "M20";
+      case PERIOD_M30: return "M30";
+      case PERIOD_H1:  return "H1";
+      case PERIOD_H2:  return "H2";
+      case PERIOD_H3:  return "H3";
+      case PERIOD_H4:  return "H4";
+      case PERIOD_H6:  return "H6";
+      case PERIOD_H8:  return "H8";
+      case PERIOD_H12: return "H12";
+      case PERIOD_D1:  return "D1";
+      case PERIOD_W1:  return "W1";
+      case PERIOD_MN1: return "MN1";
+      default:         return "TF";
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Mô tả độ dài một nến (khung hiện tại).                            |
+//+------------------------------------------------------------------+
+string CandleSpanLabelVi(const int secBar)
+{
+   if(secBar <= 0)
+      return "?";
+   if(secBar >= 86400)
+      return IntegerToString(secBar / 86400) + " ngày/nến";
+   if(secBar >= 3600)
+      return IntegerToString(secBar / 3600) + " giờ/nến";
+   if(secBar >= 60)
+      return IntegerToString(secBar / 60) + " phút/nến";
+   return IntegerToString(secBar) + " giây/nến";
+}
+
+//+------------------------------------------------------------------+
+//| Thống kê nến realtime (CopyRates) — full block + dòng gọn (push/AI local). |
+//+------------------------------------------------------------------+
+void BuildRealtimeChartAnalysisVI(const string sym, const int symDigits, string &fullOut, string &compactOut)
+{
+   fullOut = "";
+   compactOut = "";
+   if(!EnableTelegramChartAnalysis)
+      return;
+
+   int barsReq = ChartAnalysisBars;
+   if(barsReq < 10)
+      barsReq = 10;
+   if(barsReq > 500)
+      barsReq = 500;
+
+   ENUM_TIMEFRAMES tf = ChartAnalysisTimeframe;
+   if(tf == PERIOD_CURRENT)
+      tf = (ENUM_TIMEFRAMES)Period();
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   int n = CopyRates(sym, tf, 0, barsReq, rates);
+   string tfLab = PeriodToShortLabelVi(ChartAnalysisTimeframe);
+
+   if(n < 5)
+   {
+      fullOut = "--- BIỂU ĐỒ (thời gian thực) ---\n(Không đủ dữ liệu nến — kiểm tra symbol/khung hoặc history.)";
+      compactOut = tfLab + ": không đủ nến";
+      return;
+   }
+
+   double c0 = rates[0].close;
+   double o0 = rates[0].open;
+   int iOld = n - 1;
+   double cOld = rates[iOld].close;
+   double chgPct = (cOld > 0.0) ? ((c0 / cOld - 1.0) * 100.0) : 0.0;
+
+   double rangeHigh = rates[0].high;
+   double rangeLow = rates[0].low;
+   for(int i = 1; i < n; i++)
+   {
+      if(rates[i].high > rangeHigh)
+         rangeHigh = rates[i].high;
+      if(rates[i].low < rangeLow)
+         rangeLow = rates[i].low;
+   }
+
+   int bull = 0, bear = 0;
+   int look = 12;
+   if(look > n)
+      look = n;
+   for(int j = 0; j < look; j++)
+   {
+      if(rates[j].close >= rates[j].open)
+         bull++;
+      else
+         bear++;
+   }
+
+   int k5 = 5;
+   if(k5 > n)
+      k5 = n;
+   int k20 = 20;
+   if(k20 > n)
+      k20 = n;
+   double sum5 = 0.0, sum20 = 0.0;
+   for(int k = 0; k < k5; k++)
+      sum5 += rates[k].close;
+   for(int k = 0; k < k20; k++)
+      sum20 += rates[k].close;
+   double sma5 = sum5 / k5;
+   double sma20 = sum20 / k20;
+
+   int atrN = 14;
+   if(atrN > n)
+      atrN = n;
+   double sumATR = 0.0;
+   for(int a = 0; a < atrN; a++)
+      sumATR += rates[a].high - rates[a].low;
+   double atrAvg = (atrN > 0) ? sumATR / atrN : 0.0;
+
+   string bias = "";
+   if(c0 > sma5 && sma5 > sma20)
+      bias = "nghiêng tăng ngắn hạn (giá > MA5 > MA20).";
+   else if(c0 < sma5 && sma5 < sma20)
+      bias = "nghiêng giảm ngắn hạn (giá < MA5 < MA20).";
+   else
+      bias = "đan xen / đi ngang nhanh — MA không xếp rõ xu hướng.";
+
+   string lastBar = (c0 >= o0) ? "nến đang hình thành: tăng (đóng ≥ mở)." : "nến đang hình thành: giảm (đóng < mở).";
+
+   fullOut = "--- BIỂU ĐỒ (thời gian thực, lúc báo) ---\n";
+   fullOut += "Khung: " + tfLab + " | Số nến: " + IntegerToString(n) + "\n";
+   fullOut += "Giá đóng mới nhất: " + DoubleToString(c0, symDigits) + " | " + lastBar + "\n";
+   fullOut += "So với đóng nến cũ nhất trong cửa sổ (" + IntegerToString(n) + " nến): " + (chgPct >= 0.0 ? "+" : "") + DoubleToString(chgPct, 2) + "%\n";
+   fullOut += "Đỉnh/đáy trong " + IntegerToString(n) + " nến: " + DoubleToString(rangeHigh, symDigits) + " / " + DoubleToString(rangeLow, symDigits) + "\n";
+   fullOut += IntegerToString(look) + " nến gần nhất: " + IntegerToString(bull) + " tăng / " + IntegerToString(bear) + " giảm\n";
+   fullOut += "MA đơn giản (5 vs 20): " + DoubleToString(sma5, symDigits) + " / " + DoubleToString(sma20, symDigits) + " → " + bias + "\n";
+   fullOut += "Biên độ nến TB (high−low, " + IntegerToString(atrN) + " nến): " + DoubleToString(atrAvg, symDigits) + "\n";
+
+   int secBar = PeriodSeconds(tf);
+   if(secBar <= 0)
+      secBar = 60;
+   int n24want = (int)MathCeil(86400.0 / (double)secBar);
+   if(n24want < 2)
+      n24want = 2;
+   int n24 = n24want;
+   if(n24 > n - 1)
+      n24 = n - 1;
+   int n7want = (int)MathCeil(604800.0 / (double)secBar);
+   if(n7want < 2)
+      n7want = 2;
+   int n7 = n7want;
+   if(n7 > n - 1)
+      n7 = n - 1;
+   if(n7 < n24)
+      n7 = n24;
+
+   fullOut += "\n--- ĐA KHUNG (ước lượng từ độ dài nến × khung " + tfLab + ") ---\n";
+   fullOut += "Một nến: " + CandleSpanLabelVi(secBar) + "\n";
+   if(n24 < n24want)
+      fullOut += "Lưu ý: ~24h cần khoảng " + IntegerToString(n24want) + " nến nhưng chỉ có " + IntegerToString(n) + " nến — số liệu 24h là tối đa có sẵn.\n";
+   if(n7 < n7want)
+      fullOut += "Lưu ý: ~7 ngày cần khoảng " + IntegerToString(n7want) + " nến — đang dùng " + IntegerToString(n7) + " nến.\n";
+
+   double pct24 = 0.0, pct7 = 0.0;
+   if(n24 >= 1 && n24 < n && rates[n24].close > 0.0)
+      pct24 = (c0 / rates[n24].close - 1.0) * 100.0;
+   if(n7 >= 1 && n7 < n && rates[n7].close > 0.0)
+      pct7 = (c0 / rates[n7].close - 1.0) * 100.0;
+
+   double hi24 = rates[0].high, lo24 = rates[0].low;
+   for(int i = 1; i < n24 && i < n; i++)
+   {
+      if(rates[i].high > hi24)
+         hi24 = rates[i].high;
+      if(rates[i].low < lo24)
+         lo24 = rates[i].low;
+   }
+   double hi7 = rates[0].high, lo7 = rates[0].low;
+   for(int i = 1; i < n7 && i < n; i++)
+   {
+      if(rates[i].high > hi7)
+         hi7 = rates[i].high;
+      if(rates[i].low < lo7)
+         lo7 = rates[i].low;
+   }
+
+   fullOut += "Cửa sổ ~24h: " + IntegerToString(n24) + " nến | % đổi đóng vs đóng cách " + IntegerToString(n24) + " nến: "
+              + (pct24 >= 0.0 ? "+" : "") + DoubleToString(pct24, 2) + "%\n";
+   fullOut += "Đỉnh/đáy trong " + IntegerToString(n24) + " nến gần nhất: " + DoubleToString(hi24, symDigits) + " / " + DoubleToString(lo24, symDigits) + "\n";
+   fullOut += "Cửa sổ ~7 ngày: " + IntegerToString(n7) + " nến | % đổi đóng vs đóng cách " + IntegerToString(n7) + " nến: "
+              + (pct7 >= 0.0 ? "+" : "") + DoubleToString(pct7, 2) + "%\n";
+   fullOut += "Đỉnh/đáy trong " + IntegerToString(n7) + " nến gần nhất: " + DoubleToString(hi7, symDigits) + " / " + DoubleToString(lo7, symDigits) + "\n";
+   fullOut += "Toàn cửa sổ " + IntegerToString(n) + " nến — đỉnh/đáy: " + DoubleToString(rangeHigh, symDigits) + " / " + DoubleToString(rangeLow, symDigits) + "\n";
+   fullOut += "(Chỉ mô tả số liệu nến; AI chỉ được diễn giải từ các mức trên — không bịa giá.)";
+
+   compactOut = tfLab + " " + (chgPct >= 0.0 ? "+" : "") + DoubleToString(chgPct, 1) + "%/" + IntegerToString(n) + "n";
+   if(c0 > sma5 && sma5 > sma20)
+      compactOut += " ↑MA";
+   else if(c0 < sma5 && sma5 < sma20)
+      compactOut += " ↓MA";
+   else
+      compactOut += " ~MA";
+}
+
+//+------------------------------------------------------------------+
+//| POST chat/completions tới Groq (OpenAI-compatible). UTF-8 body.    |
+//+------------------------------------------------------------------+
+string RequestGroqTelegramAnalysis(const string reason, const double pct, const double maxLossUSD,
+                                   const double bal, const double attachBal, const double bid, const string sym,
+                                   const string chartBlockVi, const bool telegramTin2FunMode)
+{
+   g_groqLastErrorDetail = "";
+   if(StringLen(GroqApiKey) < 15)
+   {
+      GroqSetLastError("GroqApiKey trống hoặc quá ngắn (<15 ký tự).");
+      return "";
+   }
+   if(StringFind(reason, "EA đã khởi động") >= 0)
+      return "";
+
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   const bool hasChartData = StringLen(chartBlockVi) > 5;
+   const bool useStructured = (!telegramTin2FunMode) && GroqStructuredChartAnalysis && StringLen(chartBlockVi) > 40;
+
+   string sys = "";
+   if(useStructured)
+   {
+      sys = "Bạn là chuyên gia phân tích kỹ thuật, viết tiếng Việt — giọng trung tính, rõ ràng, KHÔNG dùng emoji. "
+         "Nhiệm vụ chính: phân tích ĐẦY ĐỦ khối dữ liệu nến (OHLC, MA, % đa khung ~24h/~7 ngày, đỉnh/đáy) mà EA lấy từ MT5 qua CopyRates — đó là 'biểu đồ' dưới dạng số, KHÔNG phải ảnh chụp màn hình (bạn không nhận file hình). "
+         "Chỉ được dựa trên số liệu trong tin (symbol, bid, khối BIỂU ĐỒ, % P/L tài khoản EA). "
+         "TUYỆT ĐỐI không bịa mức giá của thị trường/cặp khác: mọi **giá** trong mục hỗ trợ/kháng cự phải bám đỉnh/đáy/đóng đã liệt kê; "
+         "có thể làm tròn nhẹ theo bước giá hợp lý của đúng symbol đó hoặc thêm một vùng hỗ trợ/kháng cự tiếp theo suy luận logic từ khoảng giá có sẵn (không xa vùng dữ liệu). "
+         "Đầu ra bắt buộc theo thứ tự sau (markdown nhẹ, có **in đậm** cho số % và giá quan trọng):\n"
+         "### 1. Nhận định xu hướng ngắn hạn\n"
+         "Một dòng nhãn kiểu thị trường IN HOA (ví dụ: ĐI NGANG TRONG BIÊN HẸP / TÍCH LŨY, XU HƯỚNG TĂNG NGẮN HẠN, v.v.) dựa trên % ~24h vs ~7 ngày và MA trong dữ liệu. "
+         "Sau đó 2–4 đoạn diễn giải, trích dẫn **%** và **giá** từ dữ liệu.\n"
+         "### 2. Các mức hỗ trợ và kháng cự quan trọng\n"
+         "Dùng bullet * ; kháng cự ưu tiên các **đỉnh** cửa sổ ~24h, ~7 ngày và toàn cửa sổ; hỗ trợ ưu tiên các **đáy** tương ứng. "
+         "Có thể thêm 1–2 mức/vùng kỹ thuật kế tiếp nếu suy luận gần vùng giá thực tế.\n"
+         "### 3. Lời khuyên chiến lược (thận trọng)\n"
+         "Tách ý cho người giữ lệnh dài hơn và trader ngắn hạn (chờ retest, tránh FOMO, v.v.); nhắc quản trị rủi ro chung. "
+         "Diễn đạt như khung tham khảo, không phải lệnh Mua/Bán; không khuyên nạp/rút hay đổi broker.\n"
+         "### 4. Kết luận tâm lý thị trường\n"
+         "1–2 đoạn tóm tâm lý chung.\n"
+         "Cuối bài: dòng --- rồi một dòng *Lưu ý: Phân tích chỉ mang tính tham khảo từ dữ liệu EA cung cấp, không phải lời khuyên đầu tư tài chính trực tiếp.*\n"
+         "Không dùng bảng HTML/code block; tránh markdown quá phức tạp.";
+   }
+   else
+   {
+      sys = "Bạn là kiểu bạn cùng lớp trader: vui vẻ, hài hước, hòa đồng, hay trêu nhẹ nhàng (không toxic, không công kích). "
+         "EA lưới VDualGrid trên MT5 vừa nhắn số liệu — bạn tám lại như chat nhóm: xưng mình–bạn, có thể thêm 1–2 emoji vui nếu hợp ngữ cảnh, có punchline nhẹ, so sánh dễ thương. "
+         "Giọng lạc quan, ấm, động viên team; tránh văn báo cáo, (1)(2)(3), markdown phức tạp, bảng, code block. "
+         "Bàn quanh số liệu: tóm tắt, vibe, tâm lý — không ra lệnh, không khuyên nạp/rút, tăng lot hay đổi broker cụ thể. "
+         "Nếu có khối thống kê nến (BIỂU ĐỒ) từ EA, đó là dữ liệu nến thật từ MT5 (không phải ảnh): hãy dùng các % và đỉnh/đáy trong khối đó để nói rõ xu hướng / vibe chart ít nhất vài câu, không chỉ nói P/L tài khoản. "
+         "Kết khéo: chỉ là chuyện phiếm, không phải tư vấn tài chính.";
+   }
+
+   string user = "";
+   if(useStructured)
+      user = "EA VDualGrid gửi báo cáo — hãy phân tích biểu đồ thời gian thực theo đúng định dạng system.\n\n";
+   else
+      user = "Ê ê, EA VDualGrid (grid ảo) bắn tin này — bạn đọc rồi chém gió vui hộ mình:\n\n";
+
+   user += "Cặp / chart: " + sym + "\n";
+   user += "Chuyện gì xảy ra: " + reason + "\n";
+   user += "Giá bid lúc đó: " + DoubleToString(bid, digits) + "\n";
+   user += "Vốn lúc gắn EA (để soi): " + DoubleToString(attachBal, 2) + " USD\n";
+   user += "Số dư broker bây giờ: " + DoubleToString(bal, 2) + " USD\n";
+   user += "Nạp/rút sau khi gắn EA không cộng trừ vào % P/L giao dịch bên dưới (gốc gắn cố định; EA chỉ cộng P/L từ lệnh cùng magic).\n";
+   user += "P/L kiểu trading so với lúc gắn (đóng + đang treo, không tính nạp rút): " + (pct >= 0 ? "+" : "") + DoubleToString(pct, 2) + "%\n";
+   user += "Biên độ drawdown (theo equity view từ lúc gắn): khoảng " + DoubleToString(maxLossUSD, 2) + " USD\n";
+   user += "Equity view thấp nhất từng thấy: " + DoubleToString(globalMinTradingEquityView, 2) + " USD\n\n";
+   if(hasChartData)
+   {
+      user += "════════ KHỐI PHẢI PHÂN TÍCH (dữ liệu nến thời gian thực từ MT5, không phải ảnh) ════════\n";
+      user += chartBlockVi + "\n";
+      user += "════════ Hết khối dữ liệu nến ════════\n\n";
+      user += "Yêu cầu: toàn bộ phần phân tích biểu đồ của bạn phải căn cứ vào khối trên (đỉnh/đáy, % thay đổi, MA, cửa sổ 24h/7 ngày).\n\n";
+   }
+   if(useStructured)
+   {
+      user += "Bắt buộc: dùng đúng symbol \"" + sym + "\" và các con số từ khối dữ liệu; không copy ví dụ giá Bitcoin nếu không phải BTC.\n";
+      user += "Ưu tiên so sánh % ngắn (~24h nến) với % dài hơn (~7 ngày nến) như trong dữ liệu để mô tả xu hướng.";
+   }
+   else if(telegramTin2FunMode)
+      user += "Chém gió vui nhộn, hài hước, có thể emoji — nhưng BẮT BUỘC có vài ý bám số nến trong khối trên (xu hướng, đỉnh/đáy, % ngắn vs dài, MA) như bạn đang tám chart với nhóm; không chỉ nói P/L tài khoản; không slide PowerPoint.";
+   else
+      user += "Kể sao cho vui, hài hước mà vẫn đúng trọng tâm — an ủi hoặc chúc mừng kiểu bạn thân; đừng làm slide PowerPoint.";
+
+   string jsys = GroqJsonEscapeString(sys);
+   string juser = GroqJsonEscapeString(user);
+   string model = GroqModelTrim();
+   int mtoks = GroqMaxTokens;
+   if(mtoks < 64)
+      mtoks = 64;
+   if(useStructured)
+   {
+      if(mtoks < 2000)
+         mtoks = 2000;
+      if(mtoks > 8192)
+         mtoks = 8192;
+   }
+   else if(mtoks > 2048)
+      mtoks = 2048;
+
+   double tempGroq = useStructured ? 0.55 : 0.88;
+   string json = "{\"model\":\"" + model + "\",\"messages\":["
+                 "{\"role\":\"system\",\"content\":\"" + jsys + "\"},"
+                 "{\"role\":\"user\",\"content\":\"" + juser + "\"}],"
+                 "\"max_tokens\":" + IntegerToString(mtoks) + ",\"temperature\":" + DoubleToString(tempGroq, 2) + ",\"stream\":false}";
+
+   uchar udata[];
+   int nw = StringToCharArray(json, udata, 0, WHOLE_ARRAY, CP_UTF8);
+   if(nw <= 1)
+   {
+      GroqSetLastError("Không tạo được body JSON cho Groq (chuỗi quá lớn hoặc lỗi MT5).");
+      return "";
+   }
+   int blen = nw;
+   if(blen > 0 && udata[blen - 1] == 0)
+      blen--;
+   if(blen > 700000)
+   {
+      GroqSetLastError("Request Groq quá lớn (" + IntegerToString(blen) + " byte). Giảm ChartAnalysisBars.");
+      return "";
+   }
+   char post[];
+   ArrayResize(post, blen);
+   for(int b = 0; b < blen; b++)
+      post[b] = (char)udata[b];
+
+   char result[];
+   string resultHeaders;
+   string headers = "Content-Type: application/json; charset=utf-8\r\nAuthorization: Bearer " + GroqApiKey + "\r\n";
+   int timeout = GroqTimeoutMs;
+   if(timeout < 5000)
+      timeout = 5000;
+   if(timeout > 120000)
+      timeout = 120000;
+   int res = -1;
+   string errSnap = "";
+   for(int attempt = 0; attempt < 2; attempt++)
+   {
+      if(attempt > 0)
+         Sleep(600);
+      ResetLastError();
+      res = WebRequest("POST", "https://api.groq.com/openai/v1/chat/completions", headers, timeout, post, result, resultHeaders);
+      errSnap = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+      if(res == 200)
+         break;
+      const bool retry = (res < 0 || res == 429 || res == 502 || res == 503 || res == 504);
+      if(!retry || attempt >= 1)
+         break;
+      Print("VDualGrid Groq: thử lại lần 2 sau lỗi tạm (HTTP ", res, " LE=", GetLastError(), ").");
+   }
+   if(res != 200)
+   {
+      string apiMsg = GroqExtractApiErrorBrief(errSnap);
+      GroqSetLastError("HTTP " + IntegerToString(res) + " LE=" + IntegerToString(GetLastError()) + ". " + apiMsg);
+      Print("VDualGrid Groq: ", g_groqLastErrorDetail, " | Allow WebRequest: https://api.groq.com");
+      return "";
+   }
+
+   string body = errSnap;
+   if(StringLen(body) < 25)
+   {
+      GroqSetLastError("HTTP 200 nhưng phản hồi rỗng/quá ngắn — có thể buffer WebRequest MT5 hoặc proxy. Thử giảm ChartAnalysisBars / độ dài prompt.");
+      Print("VDualGrid Groq: body ngắn bất thường, len=", StringLen(body));
+      return "";
+   }
+   if(StringFind(body, "\"error\"") >= 0 && StringFind(body, "\"choices\"") < 0)
+   {
+      GroqSetLastError(GroqExtractApiErrorBrief(body));
+      Print("VDualGrid Groq — lỗi API: ", StringSubstr(body, 0, 1200));
+      return "";
+   }
+
+   string content = GroqExtractAssistantContent(body);
+   StringTrimLeft(content);
+   StringTrimRight(content);
+   if(StringLen(content) < 5)
+   {
+      string hint = "";
+      if(StringFind(body, "\"tool_calls\"") >= 0)
+         hint = " Phản hồi có tool_calls (không có text) — thử đổi GroqModel (vd. llama-3.1-8b-instant).";
+      GroqSetLastError("Không parse được nội dung assistant." + hint + " Mẫu: " + StringSubstr(body, 0, 280));
+      Print("VDualGrid Groq: content rỗng. Đầu body: ", StringSubstr(body, 0, 900));
+      return "";
+   }
+   g_groqLastErrorDetail = "";
+   if(useStructured)
+      return "Phân tích AI — biểu đồ\n\n" + content;
+   if(telegramTin2FunMode)
+      return "Phân tích AI — chém gió & chart\n\n" + content;
+   return "Phân tích AI\n\n" + content;
+}
+
+//+------------------------------------------------------------------+
+//| Cắt chuỗi cho giới hạn Telegram (caption 1024, text 4096).         |
+//+------------------------------------------------------------------+
+string TelegramClampLen(const string s, const int maxLen)
+{
+   if(maxLen < 4)
+      return "";
+   if(StringLen(s) <= maxLen)
+      return s;
+   return StringSubstr(s, 0, maxLen - 3) + "...";
+}
+
+//+------------------------------------------------------------------+
+//| Một tin Telegram (text); tránh gọi trực tiếp nếu tin rất dài.     |
+//+------------------------------------------------------------------+
+void SendTelegramMessageOnce(const string msg)
+{
+   if(!EnableTelegram || StringLen(TelegramBotToken) < 10 || StringLen(TelegramChatID) < 5)
+      return;
+   string url = "https://api.telegram.org/bot" + TelegramBotToken + "/sendMessage";
+   string body = "chat_id=" + TelegramChatID + "&text=" + UrlEncodeForTelegram(msg) + "&disable_web_page_preview=true";
+   uchar ubody[];
+   int nw = StringToCharArray(body, ubody, 0, WHOLE_ARRAY, CP_UTF8);
+   if(nw <= 0)
+      return;
+   int blen = nw;
+   if(blen > 0 && ubody[blen - 1] == 0)
+      blen--;
+   char post[];
+   ArrayResize(post, blen);
+   for(int b = 0; b < blen; b++)
+      post[b] = (char)ubody[b];
+
+   char result[];
+   string resultHeaders;
+   string headers = "Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\n";
+   ResetLastError();
+   int res = WebRequest("POST", url, headers, 5000, post, result, resultHeaders);
+   if(res != 200)
+   {
+      string resp = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+      Print("Telegram: mã HTTP ", res, " GetLastError=", GetLastError(), " | phản hồi: ", StringSubstr(resp, 0, 700));
+      if(res < 0)
+         Print("Telegram: mã <0 — thường WebRequest chưa được phép: Tools→Options→Expert Advisors → Allow WebRequest → https://api.telegram.org");
+      else
+         Print("Telegram: mã HTTP ", res, " — thường do Bot Token / Chat ID, tin quá dài (4096), hoặc tham số; xem JSON phía trên.");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Send message to Telegram — tự tách nếu vượt ~3800 ký tự (giới hạn Telegram). |
 //+------------------------------------------------------------------+
 void SendTelegramMessage(const string msg)
 {
    if(!EnableTelegram || StringLen(TelegramBotToken) < 10 || StringLen(TelegramChatID) < 5)
       return;
-   string url = "https://api.telegram.org/bot" + TelegramBotToken + "/sendMessage";
-   string body = "chat_id=" + TelegramChatID + "&text=" + UrlEncodeForTelegram(msg);
-   char post[], result[];
-   string resultHeaders;
-   StringToCharArray(body, post, 0, StringLen(body));
-   string headers = "Content-Type: application/x-www-form-urlencoded\r\n";
-   ResetLastError();
-   int res = WebRequest("POST", url, headers, 5000, post, result, resultHeaders);
-   if(res != 200)
-      Print("Telegram: WebRequest failed, res=", res, " err=", GetLastError(), ". Add https://api.telegram.org to Tools->Options->Expert Advisors->Allow WebRequest.");
+   const int softMax = 3800;
+   int total = StringLen(msg);
+   if(total <= softMax)
+   {
+      SendTelegramMessageOnce(msg);
+      return;
+   }
+   int start = 0;
+   int partNum = 0;
+   while(start < total)
+   {
+      partNum++;
+      int chunkEnd = start + softMax;
+      if(chunkEnd > total)
+         chunkEnd = total;
+      else
+      {
+         int breakPref = start + (softMax * 3) / 4;
+         int br = -1;
+         for(int p = chunkEnd - 1; p >= breakPref; p--)
+         {
+            if(StringGetCharacter(msg, p) == '\n')
+            {
+               br = p + 1;
+               break;
+            }
+         }
+         if(br > start)
+            chunkEnd = br;
+      }
+      string slice = StringSubstr(msg, start, chunkEnd - start);
+      string head = (partNum > 1) ? ("[Tiếp " + IntegerToString(partNum) + "]\n") : "";
+      SendTelegramMessageOnce(head + slice);
+      start = chunkEnd;
+      if(start < total)
+         Sleep(200);
+   }
 }
 
 //+------------------------------------------------------------------+
-//| Send notification when EA resets or stops. Example:                |
-//| EA RESET                                                           |
-//| Chart: EURUSD                                                     |
-//| Reason: Session profit target                                       |
-//| Initial balance: 10000.00 USD                                      |
-//| Current broker balance: 10250.00 USD                                |
-//| Trading P/L vs attach (excl. deposit/withdraw): +2.50%              |
-//| Max drawdown (trading view): 150.00 USD                            |
-//| Max single lot / total open (since attach): 0.05 / 0.25             |
+//| Gửi thông báo MT5 + Telegram khi reset / dừng EA (nội dung tiếng Việt). |
+//| Telegram: (1) sendMessage tin EA. (2) Nội dung chart+AI đầy đủ: sendPhoto (caption ngắn) + sendMessage (tách chunk nếu dài); |
+//|    không ảnh: một hoặc nhiều sendMessage. Groq: 4 mục nếu GroqStructuredChartAnalysis + đủ khối nến, không cắt bớt AI. |
 //+------------------------------------------------------------------+
 void SendResetNotification(const string reason)
 {
@@ -697,24 +1836,125 @@ void SendResetNotification(const string reason)
    // % chỉ từ giao dịch: (đóng lệnh + float) / vốn lúc gắn — không nạp/rút
    double pct = (attachBalance > 0) ? ((eaCumulativeTradingPL + flNow) / attachBalance * 100.0) : 0;
    double maxLossUSD = globalPeakTradingEquityView - globalMinTradingEquityView;
-   string msg = "VDualGrid\n";
-   msg += "Chart: " + _Symbol + "\n";
-   msg += "Reason: " + reason + "\n";
-   msg += "Price at reset: " + DoubleToString(bid, symDigits) + "\n\n";
-   msg += "--- SETTINGS ---\n";
-   msg += "Balance at EA attach (reference): " + DoubleToString(attachBalance, 2) + " USD\n\n";
-   msg += "--- CURRENT STATUS ---\n";
-   msg += "Current broker balance: " + DoubleToString(bal, 2) + " USD\n";
-   msg += "Trading P/L vs attach (closed+float, excl. deposit/withdraw): " + (pct >= 0 ? "+" : "") + DoubleToString(pct, 2) + "%\n";
-   msg += "Max drawdown (trading view): " + DoubleToString(maxLossUSD, 2) + " USD\n";
-   msg += "Lowest trading-equity view (since attach): " + DoubleToString(globalMinTradingEquityView, 2) + " USD\n";
-   msg += "--- FREE EA ---\n";
-   msg += "Free MT5 automated trading EA.\n";
-   msg += "Just register an account using this link: https://one.exnessonelink.com/a/iu0hffnbzb\n";
-   msg += "After registering, send me your account ID to receive the EA.";
+   // Tin đầy đủ (Telegram + chi tiết)
+   string msg = "Thông báo VDualGrid\n";
+   msg += "Biểu đồ: " + _Symbol + "\n";
+   msg += "Lý do: " + reason + "\n";
+   msg += "Giá tại thời điểm báo: " + DoubleToString(bid, symDigits) + "\n\n";
+   msg += "--- THAM CHIẾU ---\n";
+   msg += "Số dư khi gắn EA: " + DoubleToString(attachBalance, 2) + " USD\n";
+   msg += "Nạp/rút tiền sau đó không đổi gốc này và không làm lệch % lãi/lỗ giao dịch trong tin (EA chỉ tích lũy P/L từ lệnh + swap + phí, cùng magic).\n";
+   if(EnableCapitalBasedScaling)
+      msg += "Đang bật scale vốn theo số dư (nhóm 6): nạp/rút có thể làm thay đổi hệ số lot & mục tiêu phiên theo quy tắc input — riêng % P/L trong thông báo vẫn so với gốc gắn EA.\n";
+   msg += "\n--- TRẠNG THÁI ---\n";
+   msg += "Số dư broker hiện tại: " + DoubleToString(bal, 2) + " USD\n";
+   msg += "Lãi/lỗ giao dịch so với lúc gắn EA (đóng + đang treo, không tính nạp/rút): " + (pct >= 0 ? "+" : "") + DoubleToString(pct, 2) + "%\n";
+   msg += "Biên độ sụt giảm tối đa (theo equity EA tính từ lúc gắn): " + DoubleToString(maxLossUSD, 2) + " USD\n";
+   msg += "Mức equity thấp nhất kể từ lúc gắn EA: " + DoubleToString(globalMinTradingEquityView, 2) + " USD\n";
+   msg += "--- EA MIỄN PHÍ ---\n";
+   msg += "EA giao dịch tự động trên MT5 miễn phí.\n";
+   msg += "Đăng ký tài khoản qua liên kết: https://one.exnessonelink.com/a/iu0hffnbzb\n";
+   msg += "Sau khi đăng ký, gửi ID tài khoản để nhận EA.";
+   // Điện thoại (SendNotification): tối đa 255 ký tự, chỉ tiếng Việt gọn
+   string rShort = reason;
+   const int rMaxPhone = 72;
+   if(StringLen(rShort) > rMaxPhone)
+      rShort = StringSubstr(rShort, 0, rMaxPhone - 3) + "...";
+   string msgPhone = "VDualGrid • " + _Symbol + "\n";
+   msgPhone += "Lý do: " + rShort + "\n";
+   msgPhone += "Giá " + DoubleToString(bid, symDigits);
+   msgPhone += " • Số dư " + DoubleToString(bal, 2) + " USD";
+   msgPhone += " • Lãi/lỗ: " + (pct >= 0 ? "+" : "") + DoubleToString(pct, 1) + "%";
+   string chartFullVi = "";
+   string chartCompactVi = "";
+   if(EnableTelegramChartAnalysis && (EnableTelegram || EnableResetNotification))
+      BuildRealtimeChartAnalysisVI(_Symbol, symDigits, chartFullVi, chartCompactVi);
+   while(StringLen(msgPhone) > 255)
+      msgPhone = StringSubstr(msgPhone, 0, 252) + "...";
    if(EnableResetNotification)
-      SendNotification(msg);
-   SendTelegramMessage(msg);
+      SendNotification(msgPhone);
+   if(EnableTelegram)
+   {
+      SendTelegramMessageOnce(TelegramClampLen(msg, 4096));
+      Sleep(200);
+
+      const bool hasChartText = EnableTelegramChartAnalysis && StringLen(chartFullVi) > 5;
+      const bool wantTin2 = TelegramFunAIAnalysis || EnableTelegramChartScreenshot || hasChartText;
+      if(!wantTin2)
+         return;
+
+      const bool groqTin2Structured = GroqStructuredChartAnalysis && hasChartText && StringLen(chartFullVi) > 40;
+      const bool groqTin2FunMode = !groqTin2Structured;
+
+      string aiBlock = "";
+      const int aiCapTin2 = 3200;
+
+      if(TelegramFunAIAnalysis)
+      {
+         const bool chartAiGroqOnly = EnableTelegramChartAnalysis && StringLen(chartFullVi) > 40;
+
+         if(chartAiGroqOnly)
+         {
+            if(!EnableGroqTelegramAI || StringLen(GroqApiKey) < 15)
+               aiBlock = "Phân tích AI (Groq)\n\nBật EnableGroqTelegramAI + GroqApiKey + Allow WebRequest https://api.groq.com để phân tích nến.";
+            else
+            {
+               aiBlock = RequestGroqTelegramAnalysis(reason, pct, maxLossUSD, bal, attachBalance, bid, _Symbol, chartFullVi, groqTin2FunMode);
+               if(StringLen(aiBlock) < 20)
+               {
+                  aiBlock = "Phân tích AI (Groq)\n\nGroq không trả lời — mạng, API key, model, Allow WebRequest, GroqTimeoutMs; xem Experts.";
+                  if(StringLen(g_groqLastErrorDetail) > 3)
+                     aiBlock += "\n\nChi tiết: " + g_groqLastErrorDetail;
+               }
+            }
+         }
+         else
+         {
+            if(EnableGroqTelegramAI && StringLen(GroqApiKey) >= 15)
+               aiBlock = RequestGroqTelegramAnalysis(reason, pct, maxLossUSD, bal, attachBalance, bid, _Symbol, chartFullVi, groqTin2FunMode);
+            if(StringLen(aiBlock) < 20)
+            {
+               if(GroqFallbackToLocalFunAI || !EnableGroqTelegramAI)
+                  aiBlock = BuildFunAIAnalysisTelegram(reason, pct, maxLossUSD, bal, attachBalance, chartCompactVi);
+               else
+               {
+                  aiBlock = "Phân tích AI\n\nKhông lấy được Groq — kiểm tra key và Allow WebRequest.";
+                  if(StringLen(g_groqLastErrorDetail) > 3)
+                     aiBlock += "\n\nChi tiết: " + g_groqLastErrorDetail;
+               }
+            }
+         }
+         if(groqTin2FunMode)
+            aiBlock = GroqTelegramAiTruncate(aiBlock, aiCapTin2);
+      }
+
+      string part2 = "";
+      if(hasChartText)
+         part2 += chartFullVi;
+      if(TelegramFunAIAnalysis && StringLen(aiBlock) > 0)
+      {
+         if(hasChartText)
+            part2 += "\n\n";
+         part2 += aiBlock;
+      }
+      else if(!TelegramFunAIAnalysis && EnableTelegramChartScreenshot && !hasChartText)
+         part2 += "Ảnh chart MT5.\n";
+      else if(!TelegramFunAIAnalysis && hasChartText)
+         part2 += "\n(AI tắt — chỉ số liệu nến.)\n";
+
+      if(StringLen(part2) < 8)
+         part2 = "VDualGrid • " + _Symbol;
+
+      if(EnableTelegramChartScreenshot)
+      {
+         string capShot = _Symbol + " • chart";
+         SendTelegramChartScreenshotIfEnabled(TelegramClampLen(capShot, 1024));
+         Sleep(200);
+         SendTelegramMessage(part2);
+      }
+      else
+         SendTelegramMessage(part2);
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -834,12 +2074,12 @@ int GridSignedLevelNumFromIndex(int idx)
 }
 
 //+------------------------------------------------------------------+
-//| First lot (level 1): EACH ORDER TYPE SEPARATE (VirtualGridLotSize). |
+//| First lot (level 1): VirtualGridLotSize × mult vốn (mục 6) nếu bật. |
 //+------------------------------------------------------------------+
 double GetBaseLotForOrderType(ENUM_ORDER_TYPE orderType)
 {
    if(orderType != ORDER_TYPE_BUY_LIMIT && orderType != ORDER_TYPE_SELL_LIMIT && orderType != ORDER_TYPE_BUY_STOP && orderType != ORDER_TYPE_SELL_STOP) return 0;
-   return VirtualGridLotSize;
+   return GetEffectiveVirtualGridBaseLot();
 }
 
 //+------------------------------------------------------------------+
