@@ -5,12 +5,11 @@
 // Allow wrapper versions to reuse this file while overriding #property fields.
 #ifndef VDUALGRID_SKIP_PROPERTIES
 #property copyright "VDualGrid"
-#property version   "3.49"
+#property version   "3.51"
 #property description "VDualGrid: virtual dual-side grid; half-step to level 1; session reset; cumulative total TP stop"
 #endif
 // WebRequest: Tools -> Options -> Expert Advisors -> Allow WebRequest for listed URL:
 //   https://api.telegram.org
-//   https://api.groq.com   (khi bật Groq AI)
 
 #include <Trade\Trade.mqh>
 
@@ -64,22 +63,14 @@ input group "=== 5.1 NOTIFICATIONS — Telegram ==="
 input bool EnableTelegram = true;               // Gửi cùng nội dung qua Telegram (cần WebRequest + điền Token/Chat ID)
 input string TelegramBotToken = "";             // Bot Token (@BotFather)
 input string TelegramChatID = "";               // Chat ID nhóm (số âm, ví dụ -1001234567890)
-input bool   TelegramFunAIAnalysis = true;        // Khối AI trên Telegram: có dữ liệu biểu đồ → chỉ Groq; không có biểu đồ → Groq hoặc rule-based
-input bool   EnableTelegramChartAnalysis = true;    // Thống kê nến thời gian thực (CopyRates) kèm tin; phần phân tích biểu đồ bắt buộc qua Groq
+input bool   TelegramFunAIAnalysis = true;        // Khối phân tích vui trên Telegram (local), không dùng Groq
+input bool   EnableTelegramChartAnalysis = true;    // Thống kê nến thời gian thực (CopyRates) kèm tin để chém gió local
 input ENUM_TIMEFRAMES ChartAnalysisTimeframe = PERIOD_CURRENT; // Khung nến (PERIOD_CURRENT = khung chart đang gắn EA)
 input int    ChartAnalysisBars = 64;               // Số nến lấy về (10–500)
 input bool   EnableTelegramChartScreenshot = true;  // Gửi thêm ảnh chart (GIF) chụp đúng lúc gửi tin — chart phải đang mở trên MT5
 input int    TelegramScreenshotWidth = 1200;        // Chiều ngang (320–1920)
 input int    TelegramScreenshotHeight = 800;        // Chiều dọc (240–1080)
 
-input group "=== 5.2 NOTIFICATIONS — Groq AI (Telegram) ==="
-input bool   EnableGroqTelegramAI = true;         // Gọi Groq API khi gửi Telegram + TelegramFunAIAnalysis (cần key + Allow WebRequest)
-input string GroqApiKey = "";                     // API key (console.groq.com/keys). Không chia sẻ file .set — key lộ trong input
-input string GroqModel = "llama-3.3-70b-versatile"; // Model Groq (xem docs Models)
-input int    GroqMaxTokens = 512;                 // Token trả lời (64–2048 chém gió; phân tích có cấu trúc: tối thiểu 2000, tối đa 8192)
-input int    GroqTimeoutMs = 25000;               // Timeout WebRequest (ms), tối thiểu 5000
-input bool   GroqFallbackToLocalFunAI = true;     // Chỉ khi KHÔNG gửi khối biểu đồ cho AI: Groq lỗi → rule-based. Có biểu đồ → luôn chỉ Groq
-input bool   GroqStructuredChartAnalysis = true;    // Bật: tin 2 Groq = báo cáo 4 mục đầy đủ (khi có khối nến đủ dài). Tắt: chém gió + số nến
 
 //+------------------------------------------------------------------+
 //| 6. VỐN — scale lot đầu & mục tiêu reset phiên theo số dư vs gốc   |
@@ -116,7 +107,6 @@ datetime sessionStartTime = 0;                // Current session: starts when EA
 double sessionStartBalance = 0.0;             // Balance at session start (for info panel and session %)
 int MagicAA = 0;                              // Strategy magic (= MagicNumber in OnInit)
 double g_accumResetSessionPL = 0.0;           // TP tổng: cộng dồn effectiveSession mỗi lần reset phiên (mục 4)
-string g_groqLastErrorDetail = "";            // Lỗi Groq lần gần nhất (rút gọn, hiển thị Telegram / log)
 
 //--- Sau khi chờ ảo khớp market: chặn bổ sung lại chờ ảo cùng phía/mức cho tới khi vị thế hiện hoặc hết hạn
 #define VPGRID_VIRTUAL_EXEC_COOLDOWN_SEC 5
@@ -596,11 +586,8 @@ int OnInit()
       Print("VDualGrid: Telegram WebRequest — thêm https://api.telegram.org vào Tools → Options → Expert Advisors → Allow WebRequest.");
    if(EnableTelegram && EnableTelegramChartScreenshot)
       Print("VDualGrid: ảnh chart Telegram — ChartScreenShot cần chart EA đang gắn hiển thị; Strategy Tester thường không chụp được.");
-   if(EnableGroqTelegramAI)
-      Print("VDualGrid: Groq AI — thêm https://api.groq.com vào Allow WebRequest; không chia sẻ file .set chứa GroqApiKey.");
-   if(EnableTelegram && EnableTelegramChartAnalysis && TelegramFunAIAnalysis
-      && (!EnableGroqTelegramAI || StringLen(GroqApiKey) < 15))
-      Print("VDualGrid: Phân tích biểu đồ thời gian thực trên Telegram chỉ chạy qua Groq — bật EnableGroqTelegramAI và nhập GroqApiKey.");
+   if(EnableTelegram && EnableTelegramChartAnalysis && TelegramFunAIAnalysis)
+      Print("VDualGrid: Phân tích Telegram dùng local text (không dùng Groq).");
    Print("Symbol: ", _Symbol, " | Base: ", basePrice, " | Grid: ", GridDistancePips, " pips | Levels: ", ArraySize(gridLevels));
    Print("Chờ ảo: mỗi bậc lưới 1 Buy+1 Sell (Stop/Limit theo vị trí giá) | mức=", ArraySize(gridLevels), " | lot L1=", GetLotForLevel(ORDER_TYPE_BUY_STOP, 1));
    if(EnableCapitalBasedScaling)
@@ -914,258 +901,6 @@ void SendTelegramChartScreenshotIfEnabled(const string caption)
    }
 }
 
-//+------------------------------------------------------------------+
-//| Escape chuỗi đưa vào JSON (Groq).                                 |
-//+------------------------------------------------------------------+
-string GroqJsonEscapeString(const string s)
-{
-   string r = "";
-   for(int i = 0; i < StringLen(s); i++)
-   {
-      ushort c = StringGetCharacter(s, i);
-      if(c == '\\')
-         r += "\\\\";
-      else if(c == '"')
-         r += "\\\"";
-      else if(c == '\n')
-         r += "\\n";
-      else if(c == '\r')
-         r += "\\r";
-      else if(c == '\t')
-         r += "\\t";
-      else if(c < 32)
-         r += "\\u" + StringFormat("%04x", (uint)c);
-      else
-         r += StringSubstr(s, i, 1);
-   }
-   return r;
-}
-
-//+------------------------------------------------------------------+
-int GroqHexDigit(const int ch)
-{
-   if(ch >= '0' && ch <= '9')
-      return ch - '0';
-   if(ch >= 'a' && ch <= 'f')
-      return ch - 'a' + 10;
-   if(ch >= 'A' && ch <= 'F')
-      return ch - 'A' + 10;
-   return -1;
-}
-
-//+------------------------------------------------------------------+
-//| Một code unit UTF-16 (BMP) → ký tự trong string (parse JSON \\u).  |
-//+------------------------------------------------------------------+
-string GroqAppendCodeUnit(const ushort cu)
-{
-   string t = " ";
-   StringSetCharacter(t, 0, cu);
-   return t;
-}
-
-//+------------------------------------------------------------------+
-//| Đọc chuỗi JSON sau dấu " mở (hỗ trợ \\n \\uXXXX).                    |
-//+------------------------------------------------------------------+
-string GroqReadJsonStringBody(const string json, int i, int &outEndPos)
-{
-   outEndPos = i;
-   int len = StringLen(json);
-   string out = "";
-   while(i < len)
-   {
-      ushort ch = StringGetCharacter(json, i);
-      if(ch == '\\')
-      {
-         i++;
-         if(i >= len)
-            break;
-         ushort n = StringGetCharacter(json, i);
-         if(n == 'n')
-            out += "\n";
-         else if(n == 'r')
-            out += "\r";
-         else if(n == 't')
-            out += "\t";
-         else if(n == '"' || n == '\\' || n == '/')
-            out += CharToString((uchar)n);
-         else if(n == 'u' && i + 4 < len)
-         {
-            int code = 0;
-            bool ok = true;
-            for(int h = 1; h <= 4; h++)
-            {
-               int v = GroqHexDigit(StringGetCharacter(json, i + h));
-               if(v < 0)
-               {
-                  ok = false;
-                  break;
-               }
-               code = code * 16 + v;
-            }
-            if(ok && code > 1 && code <= 0xFFFF)
-               out += GroqAppendCodeUnit((ushort)code);
-            i += 4;
-         }
-         else
-            out += CharToString((uchar)n);
-      }
-      else if(ch == '"')
-      {
-         outEndPos = i + 1;
-         return out;
-      }
-      else
-         out += StringSubstr(json, i, 1);
-      i++;
-   }
-   outEndPos = len;
-   return out;
-}
-
-//+------------------------------------------------------------------+
-//| Rút thông điệp lỗi từ JSON body Groq/OpenAI.                       |
-//+------------------------------------------------------------------+
-string GroqExtractApiErrorBrief(const string body)
-{
-   if(StringLen(body) < 10)
-      return "";
-   int mp = StringFind(body, "\"message\"");
-   if(mp < 0)
-      return StringSubstr(body, 0, 220);
-   int col = StringFind(body, ":", mp);
-   if(col < 0)
-      return "";
-   int i = col + 1;
-   int len = StringLen(body);
-   while(i < len)
-   {
-      ushort w = StringGetCharacter(body, i);
-      if(w == ' ' || w == '\t' || w == '\n' || w == '\r')
-      {
-         i++;
-         continue;
-      }
-      break;
-   }
-   if(i >= len)
-      return "";
-   ushort c0 = StringGetCharacter(body, i);
-   if(c0 == '"')
-   {
-      int endp = 0;
-      return GroqReadJsonStringBody(body, i + 1, endp);
-   }
-   int semi = i;
-   while(semi < len && StringGetCharacter(body, semi) != ',' && StringGetCharacter(body, semi) != '}')
-      semi++;
-   return StringSubstr(body, i, semi - i);
-}
-
-//+------------------------------------------------------------------+
-//| Ghi lỗi Groq gần nhất (một dòng, an toàn cho Telegram).            |
-//+------------------------------------------------------------------+
-void GroqSetLastError(const string detail)
-{
-   string d = detail;
-   StringReplace(d, "\r", " ");
-   StringReplace(d, "\n", " ");
-   if(StringLen(d) > 420)
-      d = StringSubstr(d, 0, 417) + "...";
-   g_groqLastErrorDetail = d;
-}
-
-//+------------------------------------------------------------------+
-//| Lấy nội dung assistant từ JSON chat/completions (UTF-8 đã decode). |
-//+------------------------------------------------------------------+
-string GroqExtractContentOrRefusalAfter(const string json, const int searchFrom, const int searchLimit)
-{
-   int len = StringLen(json);
-   int lim = searchFrom + searchLimit;
-   if(lim > len)
-      lim = len;
-   int cc = StringFind(json, "\"content\"", searchFrom);
-   if(cc < 0 || cc >= lim)
-   {
-      int rf = StringFind(json, "\"refusal\"", searchFrom);
-      if(rf >= 0 && rf < lim)
-         cc = rf;
-   }
-   if(cc < 0 || cc >= lim)
-      return "";
-   int colon = StringFind(json, ":", cc);
-   if(colon < 0 || colon >= lim)
-      return "";
-   int i = colon + 1;
-   while(i < len && i < lim)
-   {
-      ushort w = StringGetCharacter(json, i);
-      if(w == ' ' || w == '\t' || w == '\n' || w == '\r')
-      {
-         i++;
-         continue;
-      }
-      break;
-   }
-   if(i >= len)
-      return "";
-   ushort first = StringGetCharacter(json, i);
-   if(first == '"')
-   {
-      int endp = 0;
-      return GroqReadJsonStringBody(json, i + 1, endp);
-   }
-   if(first == '[')
-   {
-      int tpos = StringFind(json, "\"text\"", i);
-      if(tpos < 0 || tpos > i + 12000 || tpos >= lim)
-         return "";
-      int tcol = StringFind(json, ":", tpos);
-      if(tcol < 0)
-         return "";
-      int j = tcol + 1;
-      while(j < len)
-      {
-         ushort w2 = StringGetCharacter(json, j);
-         if(w2 == ' ' || w2 == '\t' || w2 == '\n' || w2 == '\r')
-         {
-            j++;
-            continue;
-         }
-         break;
-      }
-      if(j < len && StringGetCharacter(json, j) == '"')
-      {
-         int endp2 = 0;
-         return GroqReadJsonStringBody(json, j + 1, endp2);
-      }
-      return "";
-   }
-   if(first == 'n' && i + 3 < len && StringGetCharacter(json, i + 1) == 'u'
-      && StringGetCharacter(json, i + 2) == 'l' && StringGetCharacter(json, i + 3) == 'l')
-      return "";
-   return "";
-}
-
-//+------------------------------------------------------------------+
-//| Lấy nội dung assistant từ JSON chat/completions (UTF-8 đã decode). |
-//+------------------------------------------------------------------+
-string GroqExtractAssistantContent(const string json)
-{
-   if(StringLen(json) < 30)
-      return "";
-   int chPos = StringFind(json, "\"choices\"");
-   if(chPos < 0)
-      return "";
-   int msgPos = StringFind(json, "\"message\"", chPos);
-   if(msgPos < 0)
-      return "";
-   string out = GroqExtractContentOrRefusalAfter(json, msgPos, 50000);
-   StringTrimLeft(out);
-   StringTrimRight(out);
-   if(StringLen(out) >= 1)
-      return out;
-   return GroqExtractContentOrRefusalAfter(json, chPos, 150000);
-}
 
 
 //+------------------------------------------------------------------+
@@ -1286,34 +1021,6 @@ string BuildFunAIAnalysisTelegram(const string reason, const double pct, const d
    return out + ev + "\n\n" + pl + "\n" + dd + balNote + chartNote;
 }
 
-//+------------------------------------------------------------------+
-//| Chuẩn hoá model id (tránh xuống dòng / dấu ngoặc phá JSON).       |
-//+------------------------------------------------------------------+
-string GroqModelTrim()
-{
-   string m = GroqModel;
-   StringTrimLeft(m);
-   StringTrimRight(m);
-   StringReplace(m, "\"", "");
-   StringReplace(m, "\r", "");
-   StringReplace(m, "\n", "");
-   if(StringLen(m) < 3)
-      m = "llama-3.3-70b-versatile";
-   return m;
-}
-
-//+------------------------------------------------------------------+
-//| Giới hạn độ dài đoạn AI (Telegram ~4096 ký tự cả tin).            |
-//+------------------------------------------------------------------+
-string GroqTelegramAiTruncate(const string s, const int maxLen)
-{
-   if(StringLen(s) <= maxLen)
-      return s;
-   int cut = maxLen - 50;
-   if(cut < 80)
-      cut = 80;
-   return StringSubstr(s, 0, cut) + "\n...(đã cắt bớt cho Telegram)";
-}
 
 //+------------------------------------------------------------------+
 //| Nhãn khung thời gian ngắn (VN context).                            |
@@ -1533,198 +1240,6 @@ void BuildRealtimeChartAnalysisVI(const string sym, const int symDigits, string 
       compactOut += " ~MA";
 }
 
-//+------------------------------------------------------------------+
-//| POST chat/completions tới Groq (OpenAI-compatible). UTF-8 body.    |
-//+------------------------------------------------------------------+
-string RequestGroqTelegramAnalysis(const string reason, const double pct, const double maxLossUSD,
-                                   const double bal, const double attachBal, const double bid, const string sym,
-                                   const string chartBlockVi, const bool telegramTin2FunMode)
-{
-   g_groqLastErrorDetail = "";
-   if(StringLen(GroqApiKey) < 15)
-   {
-      GroqSetLastError("GroqApiKey trống hoặc quá ngắn (<15 ký tự).");
-      return "";
-   }
-   if(StringFind(reason, "EA đã khởi động") >= 0)
-      return "";
-
-   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   const bool hasChartData = StringLen(chartBlockVi) > 5;
-   const bool useStructured = (!telegramTin2FunMode) && GroqStructuredChartAnalysis && StringLen(chartBlockVi) > 40;
-
-   string sys = "";
-   if(useStructured)
-   {
-      sys = "Bạn là chuyên gia phân tích kỹ thuật, viết tiếng Việt — giọng trung tính, rõ ràng, KHÔNG dùng emoji. "
-         "Nhiệm vụ chính: phân tích ĐẦY ĐỦ khối dữ liệu nến (OHLC, MA, % đa khung ~24h/~7 ngày, đỉnh/đáy) mà EA lấy từ MT5 qua CopyRates — đó là 'biểu đồ' dưới dạng số, KHÔNG phải ảnh chụp màn hình (bạn không nhận file hình). "
-         "Chỉ được dựa trên số liệu trong tin (symbol, bid, khối BIỂU ĐỒ, % P/L tài khoản EA). "
-         "TUYỆT ĐỐI không bịa mức giá của thị trường/cặp khác: mọi **giá** trong mục hỗ trợ/kháng cự phải bám đỉnh/đáy/đóng đã liệt kê; "
-         "có thể làm tròn nhẹ theo bước giá hợp lý của đúng symbol đó hoặc thêm một vùng hỗ trợ/kháng cự tiếp theo suy luận logic từ khoảng giá có sẵn (không xa vùng dữ liệu). "
-         "Đầu ra bắt buộc theo thứ tự sau (markdown nhẹ, có **in đậm** cho số % và giá quan trọng):\n"
-         "### 1. Nhận định xu hướng ngắn hạn\n"
-         "Một dòng nhãn kiểu thị trường IN HOA (ví dụ: ĐI NGANG TRONG BIÊN HẸP / TÍCH LŨY, XU HƯỚNG TĂNG NGẮN HẠN, v.v.) dựa trên % ~24h vs ~7 ngày và MA trong dữ liệu. "
-         "Sau đó 2–4 đoạn diễn giải, trích dẫn **%** và **giá** từ dữ liệu.\n"
-         "### 2. Các mức hỗ trợ và kháng cự quan trọng\n"
-         "Dùng bullet * ; kháng cự ưu tiên các **đỉnh** cửa sổ ~24h, ~7 ngày và toàn cửa sổ; hỗ trợ ưu tiên các **đáy** tương ứng. "
-         "Có thể thêm 1–2 mức/vùng kỹ thuật kế tiếp nếu suy luận gần vùng giá thực tế.\n"
-         "### 3. Lời khuyên chiến lược (thận trọng)\n"
-         "Tách ý cho người giữ lệnh dài hơn và trader ngắn hạn (chờ retest, tránh FOMO, v.v.); nhắc quản trị rủi ro chung. "
-         "Diễn đạt như khung tham khảo, không phải lệnh Mua/Bán; không khuyên nạp/rút hay đổi broker.\n"
-         "### 4. Kết luận tâm lý thị trường\n"
-         "1–2 đoạn tóm tâm lý chung.\n"
-         "Cuối bài: dòng --- rồi một dòng *Lưu ý: Phân tích chỉ mang tính tham khảo từ dữ liệu EA cung cấp, không phải lời khuyên đầu tư tài chính trực tiếp.*\n"
-         "Không dùng bảng HTML/code block; tránh markdown quá phức tạp.";
-   }
-   else
-   {
-      sys = "Bạn là kiểu bạn cùng lớp trader: vui vẻ, hài hước, hòa đồng, hay trêu nhẹ nhàng (không toxic, không công kích). "
-         "EA lưới VDualGrid trên MT5 vừa nhắn số liệu — bạn tám lại như chat nhóm: xưng mình–bạn, có thể thêm 1–2 emoji vui nếu hợp ngữ cảnh, có punchline nhẹ, so sánh dễ thương. "
-         "Giọng lạc quan, ấm, động viên team; tránh văn báo cáo, (1)(2)(3), markdown phức tạp, bảng, code block. "
-         "Bàn quanh số liệu: tóm tắt, vibe, tâm lý — không ra lệnh, không khuyên nạp/rút, tăng lot hay đổi broker cụ thể. "
-         "Nếu có khối thống kê nến (BIỂU ĐỒ) từ EA, đó là dữ liệu nến thật từ MT5 (không phải ảnh): hãy dùng các % và đỉnh/đáy trong khối đó để nói rõ xu hướng / vibe chart ít nhất vài câu, không chỉ nói P/L tài khoản. "
-         "Kết khéo: chỉ là chuyện phiếm, không phải tư vấn tài chính.";
-   }
-
-   string user = "";
-   if(useStructured)
-      user = "EA VDualGrid gửi báo cáo — hãy phân tích biểu đồ thời gian thực theo đúng định dạng system.\n\n";
-   else
-      user = "Ê ê, EA VDualGrid (grid ảo) bắn tin này — bạn đọc rồi chém gió vui hộ mình:\n\n";
-
-   user += "Cặp / chart: " + sym + "\n";
-   user += "Chuyện gì xảy ra: " + reason + "\n";
-   user += "Giá bid lúc đó: " + DoubleToString(bid, digits) + "\n";
-   user += "Vốn lúc gắn EA (để soi): " + DoubleToString(attachBal, 2) + " USD\n";
-   user += "Số dư broker bây giờ: " + DoubleToString(bal, 2) + " USD\n";
-   user += "Nạp/rút sau khi gắn EA không cộng trừ vào % P/L giao dịch bên dưới (gốc gắn cố định; EA chỉ cộng P/L từ lệnh cùng magic).\n";
-   user += "P/L kiểu trading so với lúc gắn (đóng + đang treo, không tính nạp rút): " + (pct >= 0 ? "+" : "") + DoubleToString(pct, 2) + "%\n";
-   user += "Biên độ drawdown (theo equity view từ lúc gắn): khoảng " + DoubleToString(maxLossUSD, 2) + " USD\n";
-   user += "Equity view thấp nhất từng thấy: " + DoubleToString(globalMinTradingEquityView, 2) + " USD\n\n";
-   if(hasChartData)
-   {
-      user += "════════ KHỐI PHẢI PHÂN TÍCH (dữ liệu nến thời gian thực từ MT5, không phải ảnh) ════════\n";
-      user += chartBlockVi + "\n";
-      user += "════════ Hết khối dữ liệu nến ════════\n\n";
-      user += "Yêu cầu: toàn bộ phần phân tích biểu đồ của bạn phải căn cứ vào khối trên (đỉnh/đáy, % thay đổi, MA, cửa sổ 24h/7 ngày).\n\n";
-   }
-   if(useStructured)
-   {
-      user += "Bắt buộc: dùng đúng symbol \"" + sym + "\" và các con số từ khối dữ liệu; không copy ví dụ giá Bitcoin nếu không phải BTC.\n";
-      user += "Ưu tiên so sánh % ngắn (~24h nến) với % dài hơn (~7 ngày nến) như trong dữ liệu để mô tả xu hướng.";
-   }
-   else if(telegramTin2FunMode)
-      user += "Chém gió vui nhộn, hài hước, có thể emoji — nhưng BẮT BUỘC có vài ý bám số nến trong khối trên (xu hướng, đỉnh/đáy, % ngắn vs dài, MA) như bạn đang tám chart với nhóm; không chỉ nói P/L tài khoản; không slide PowerPoint.";
-   else
-      user += "Kể sao cho vui, hài hước mà vẫn đúng trọng tâm — an ủi hoặc chúc mừng kiểu bạn thân; đừng làm slide PowerPoint.";
-
-   string jsys = GroqJsonEscapeString(sys);
-   string juser = GroqJsonEscapeString(user);
-   string model = GroqModelTrim();
-   int mtoks = GroqMaxTokens;
-   if(mtoks < 64)
-      mtoks = 64;
-   if(useStructured)
-   {
-      if(mtoks < 2000)
-         mtoks = 2000;
-      if(mtoks > 8192)
-         mtoks = 8192;
-   }
-   else if(mtoks > 2048)
-      mtoks = 2048;
-
-   double tempGroq = useStructured ? 0.55 : 0.88;
-   string json = "{\"model\":\"" + model + "\",\"messages\":["
-                 "{\"role\":\"system\",\"content\":\"" + jsys + "\"},"
-                 "{\"role\":\"user\",\"content\":\"" + juser + "\"}],"
-                 "\"max_tokens\":" + IntegerToString(mtoks) + ",\"temperature\":" + DoubleToString(tempGroq, 2) + ",\"stream\":false}";
-
-   uchar udata[];
-   int nw = StringToCharArray(json, udata, 0, WHOLE_ARRAY, CP_UTF8);
-   if(nw <= 1)
-   {
-      GroqSetLastError("Không tạo được body JSON cho Groq (chuỗi quá lớn hoặc lỗi MT5).");
-      return "";
-   }
-   int blen = nw;
-   if(blen > 0 && udata[blen - 1] == 0)
-      blen--;
-   if(blen > 700000)
-   {
-      GroqSetLastError("Request Groq quá lớn (" + IntegerToString(blen) + " byte). Giảm ChartAnalysisBars.");
-      return "";
-   }
-   char post[];
-   ArrayResize(post, blen);
-   for(int b = 0; b < blen; b++)
-      post[b] = (char)udata[b];
-
-   char result[];
-   string resultHeaders;
-   string headers = "Content-Type: application/json; charset=utf-8\r\nAuthorization: Bearer " + GroqApiKey + "\r\n";
-   int timeout = GroqTimeoutMs;
-   if(timeout < 5000)
-      timeout = 5000;
-   if(timeout > 120000)
-      timeout = 120000;
-   int res = -1;
-   string errSnap = "";
-   for(int attempt = 0; attempt < 2; attempt++)
-   {
-      if(attempt > 0)
-         Sleep(600);
-      ResetLastError();
-      res = WebRequest("POST", "https://api.groq.com/openai/v1/chat/completions", headers, timeout, post, result, resultHeaders);
-      errSnap = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-      if(res == 200)
-         break;
-      const bool retry = (res < 0 || res == 429 || res == 502 || res == 503 || res == 504);
-      if(!retry || attempt >= 1)
-         break;
-      Print("VDualGrid Groq: thử lại lần 2 sau lỗi tạm (HTTP ", res, " LE=", GetLastError(), ").");
-   }
-   if(res != 200)
-   {
-      string apiMsg = GroqExtractApiErrorBrief(errSnap);
-      GroqSetLastError("HTTP " + IntegerToString(res) + " LE=" + IntegerToString(GetLastError()) + ". " + apiMsg);
-      Print("VDualGrid Groq: ", g_groqLastErrorDetail, " | Allow WebRequest: https://api.groq.com");
-      return "";
-   }
-
-   string body = errSnap;
-   if(StringLen(body) < 25)
-   {
-      GroqSetLastError("HTTP 200 nhưng phản hồi rỗng/quá ngắn — có thể buffer WebRequest MT5 hoặc proxy. Thử giảm ChartAnalysisBars / độ dài prompt.");
-      Print("VDualGrid Groq: body ngắn bất thường, len=", StringLen(body));
-      return "";
-   }
-   if(StringFind(body, "\"error\"") >= 0 && StringFind(body, "\"choices\"") < 0)
-   {
-      GroqSetLastError(GroqExtractApiErrorBrief(body));
-      Print("VDualGrid Groq — lỗi API: ", StringSubstr(body, 0, 1200));
-      return "";
-   }
-
-   string content = GroqExtractAssistantContent(body);
-   StringTrimLeft(content);
-   StringTrimRight(content);
-   if(StringLen(content) < 5)
-   {
-      string hint = "";
-      if(StringFind(body, "\"tool_calls\"") >= 0)
-         hint = " Phản hồi có tool_calls (không có text) — thử đổi GroqModel (vd. llama-3.1-8b-instant).";
-      GroqSetLastError("Không parse được nội dung assistant." + hint + " Mẫu: " + StringSubstr(body, 0, 280));
-      Print("VDualGrid Groq: content rỗng. Đầu body: ", StringSubstr(body, 0, 900));
-      return "";
-   }
-   g_groqLastErrorDetail = "";
-   if(useStructured)
-      return "Phân tích AI — biểu đồ\n\n" + content;
-   if(telegramTin2FunMode)
-      return "Phân tích AI — chém gió & chart\n\n" + content;
-   return "Phân tích AI\n\n" + content;
-}
 
 //+------------------------------------------------------------------+
 //| Cắt chuỗi cho giới hạn Telegram (caption 1024, text 4096).         |
@@ -1823,8 +1338,8 @@ void SendTelegramMessage(const string msg)
 
 //+------------------------------------------------------------------+
 //| Gửi thông báo MT5 + Telegram khi reset / dừng EA (nội dung tiếng Việt). |
-//| Telegram: (1) sendMessage tin EA. (2) Nội dung chart+AI đầy đủ: sendPhoto (caption ngắn) + sendMessage (tách chunk nếu dài); |
-//|    không ảnh: một hoặc nhiều sendMessage. Groq: 4 mục nếu GroqStructuredChartAnalysis + đủ khối nến, không cắt bớt AI. |
+//| Telegram: (1) sendMessage tin EA. (2) Nội dung chart+phân tích local: sendPhoto (caption ngắn) + sendMessage (tách chunk nếu dài); |
+//|    không ảnh: một hoặc nhiều sendMessage. |
 //+------------------------------------------------------------------+
 void SendResetNotification(const string reason)
 {
@@ -1883,49 +1398,11 @@ void SendResetNotification(const string reason)
       if(!wantTin2)
          return;
 
-      const bool groqTin2Structured = GroqStructuredChartAnalysis && hasChartText && StringLen(chartFullVi) > 40;
-      const bool groqTin2FunMode = !groqTin2Structured;
-
       string aiBlock = "";
-      const int aiCapTin2 = 3200;
 
       if(TelegramFunAIAnalysis)
       {
-         const bool chartAiGroqOnly = EnableTelegramChartAnalysis && StringLen(chartFullVi) > 40;
-
-         if(chartAiGroqOnly)
-         {
-            if(!EnableGroqTelegramAI || StringLen(GroqApiKey) < 15)
-               aiBlock = "Phân tích AI (Groq)\n\nBật EnableGroqTelegramAI + GroqApiKey + Allow WebRequest https://api.groq.com để phân tích nến.";
-            else
-            {
-               aiBlock = RequestGroqTelegramAnalysis(reason, pct, maxLossUSD, bal, attachBalance, bid, _Symbol, chartFullVi, groqTin2FunMode);
-               if(StringLen(aiBlock) < 20)
-               {
-                  aiBlock = "Phân tích AI (Groq)\n\nGroq không trả lời — mạng, API key, model, Allow WebRequest, GroqTimeoutMs; xem Experts.";
-                  if(StringLen(g_groqLastErrorDetail) > 3)
-                     aiBlock += "\n\nChi tiết: " + g_groqLastErrorDetail;
-               }
-            }
-         }
-         else
-         {
-            if(EnableGroqTelegramAI && StringLen(GroqApiKey) >= 15)
-               aiBlock = RequestGroqTelegramAnalysis(reason, pct, maxLossUSD, bal, attachBalance, bid, _Symbol, chartFullVi, groqTin2FunMode);
-            if(StringLen(aiBlock) < 20)
-            {
-               if(GroqFallbackToLocalFunAI || !EnableGroqTelegramAI)
-                  aiBlock = BuildFunAIAnalysisTelegram(reason, pct, maxLossUSD, bal, attachBalance, chartCompactVi);
-               else
-               {
-                  aiBlock = "Phân tích AI\n\nKhông lấy được Groq — kiểm tra key và Allow WebRequest.";
-                  if(StringLen(g_groqLastErrorDetail) > 3)
-                     aiBlock += "\n\nChi tiết: " + g_groqLastErrorDetail;
-               }
-            }
-         }
-         if(groqTin2FunMode)
-            aiBlock = GroqTelegramAiTruncate(aiBlock, aiCapTin2);
+         aiBlock = BuildFunAIAnalysisTelegram(reason, pct, maxLossUSD, bal, attachBalance, chartCompactVi);
       }
 
       string part2 = "";
