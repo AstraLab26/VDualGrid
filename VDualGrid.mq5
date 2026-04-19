@@ -5,7 +5,7 @@
 // Allow wrapper versions to reuse this file while overriding #property fields.
 #ifndef VDUALGRID_SKIP_PROPERTIES
 #property copyright "VDualGrid"
-#property version   "4.16"
+#property version   "4.17"
 #property description "VDualGrid: lưới chờ ảo, gồng lãi/cân bằng. Nạp/rút không đổi mốc TEV trong code (tin có thể hiện số dư)."
 #endif
 #include <Trade\Trade.mqh>
@@ -61,8 +61,8 @@ input ENUM_TIMEFRAMES InitBaseEmaVirtGapEMATimeframe = PERIOD_M5; // Khung EMA l
 
 input group "━━ 2e. Chờ EMA nhanh cắt EMA chậm mới đặt gốc (chỉ khi chưa có gốc) ━━"
 input bool   EnableStartupEmaFastSlowCross = true; // Bật: chờ cắt EMA (shift 0 vs 1) mới đặt gốc; đã có gốc → EA chạy bình thường, không xét cắt nữa
-input int    StartupEmaFastPeriod = 2;             // Chu kỳ EMA nhanh (PRICE_CLOSE), ≥1; nếu ≥ chậm thì tự đổi thành nhanh < chậm
-input int    StartupEmaSlowPeriod = 50;            // Chu kỳ EMA chậm, ≥1
+input int    StartupEmaFastPeriod = 1;             // Chu kỳ EMA nhanh (PRICE_CLOSE), ≥1; nếu ≥ chậm thì tự đổi thành nhanh < chậm
+input int    StartupEmaSlowPeriod = 100;           // Chu kỳ EMA chậm, ≥1
 input ENUM_TIMEFRAMES StartupEmaCrossTimeframe = PERIOD_M5; // Khung so cắt (PERIOD_CURRENT = khung chart)
 
 input group "━━ 4. Chờ ảo — lot & TP: luôn theo từng chân (4a–4d) ━━"
