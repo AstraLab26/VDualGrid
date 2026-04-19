@@ -5,8 +5,8 @@
 // Allow wrapper versions to reuse this file while overriding #property fields.
 #ifndef VDUALGRID_SKIP_PROPERTIES
 #property copyright "VDualGrid"
-#property version   "4.11"
-#property description "VDualGrid: lưới chờ ảo, gồng lãi/cân bằng. Nạp/rút không đổi mốc TEV/lot trong code (tin có thể hiện số dư)."
+#property version   "4.16"
+#property description "VDualGrid: lưới chờ ảo, gồng lãi/cân bằng. Nạp/rút không đổi mốc TEV trong code (tin có thể hiện số dư)."
 #endif
 #include <Trade\Trade.mqh>
 
@@ -14,15 +14,14 @@
 //| Quy ước NẠP/RÚT (các nhóm input bên dưới — nạp/rút không đổi logic EA): |
 //| — EA không đọc ACCOUNT_BALANCE sau khi gắn (trừ dòng hiện số dư thông báo nếu bật). |
 //| — attachBalance = số dư ledger snapshot một lần lúc OnInit; nạp/rút không cập nhật. |
-//| — initialCapitalBaselineUSD = TEV snapshot một lần lúc OnInit — mốc % P/L & scale lot (reset phiên không đổi mốc). |
+//| — initialCapitalBaselineUSD = TEV snapshot một lần lúc OnInit — mốc % P/L trong tin (reset phiên không đổi mốc). |
 //| — P/L tích lũy chỉ từ deal BUY/SELL OUT cùng magic+symbol biểu đồ (bỏ deal balance). |
 //| — Mọi quét vị thế/lệnh chờ/lịch sử: chỉ magic MagicNumber + _Symbol chart (không gộp magic khác). |
-//| — Lưới/lot/TP: theo input; scale vốn (nếu bật): mult theo TEV → nhân lot L1 + Add. |
+//| — Lưới/lot/TP: theo input.                                        |
 //| — Thông báo/lịch: không đổi lưới/lot/ngưỡng.                      |
-//| — Scale vốn (nếu bật): mult theo TEV → nhân L1 lot, Add; TEV không đổi chỉ vì nạp/rút. |
 //+------------------------------------------------------------------+
 
-//--- Kiểu tăng lot theo bậc lưới: 0=Cố định mọi bậc; 1=Cộng thêm mỗi bậc; 2=Nhân mỗi bậc (khác scale vốn nhóm 5).
+//--- Kiểu tăng lot theo bậc lưới: 0=Cố định mọi bậc; 1=Cộng thêm mỗi bậc; 2=Nhân mỗi bậc.
 enum ENUM_LOT_SCALE { LOT_FIXED = 0, LOT_ARITHMETIC = 1, LOT_GEOMETRIC = 2 };
 
 // Bốn “chân” chờ ảo theo vị trí bậc so với gốc (+ trên / - dưới) và phía Buy/Sell.
@@ -35,11 +34,11 @@ enum ENUM_VGRID_LEG
 };
 
 //+------------------------------------------------------------------+
-//| Tab Inputs — [1–2] lưới+lệnh → [4–5] lot+scale |
+//| Tab Inputs — [1–2] lưới+lệnh → [4] lot theo chân |
 //| → [6b–6c] gồng/cân bằng → [8–9] lịch, MT5.                      |
 //+------------------------------------------------------------------+
 
-//——— Giao dịch: lưới, lệnh, lot, rồi scale lot (cùng cụm) ———
+//——— Giao dịch: lưới, lệnh, lot ———
 input group "━━ 1. Lưới giá (GRID) ━━"
 input double GridDistancePips = 1000.0;         // Bước D giữa các mức (pip): bậc ±1 cách gốc nửa bước; các bậc kế tiếp cách D
 input int MaxGridLevels = 50;                  // Số mức chờ ảo mỗi phía (trên và dưới giá gốc)
@@ -56,12 +55,22 @@ input bool   EnableInitBaseEmaVirtGapBlock = true; // Bật: chỉ chụp vùng 
 input int    InitBaseEmaVirtGapEMAPeriod = 100;      // Chu kỳ EMA (PRICE_CLOSE), ≥1
 input ENUM_TIMEFRAMES InitBaseEmaVirtGapEMATimeframe = PERIOD_M5; // Khung EMA lúc chụp (PERIOD_CURRENT = khung chart)
 
+// Quy ước nhóm 2e (khi bật EnableStartupEmaFastSlowCross):
+// — EA chỉ coi là “khởi động lưới” sau khi có tín hiệu EMA nhanh cắt EMA chậm; ngay lúc đó đặt đường gốc = Bid (GridBasePriceAtPlacement) rồi khởi tạo lưới.
+// — Khi đã có gốc và EA đang chạy: mọi lần EMA cắt sau đó bị bỏ qua hoàn toàn — không đổi gốc, không phụ thuộc cắt EMA nữa (chỉ nhánh basePrice<=0 mới gọi hàm kiểm tra cắt).
+
+input group "━━ 2e. Chờ EMA nhanh cắt EMA chậm mới đặt gốc (chỉ khi chưa có gốc) ━━"
+input bool   EnableStartupEmaFastSlowCross = true; // Bật: chờ cắt EMA (shift 0 vs 1) mới đặt gốc; đã có gốc → EA chạy bình thường, không xét cắt nữa
+input int    StartupEmaFastPeriod = 2;             // Chu kỳ EMA nhanh (PRICE_CLOSE), ≥1; nếu ≥ chậm thì tự đổi thành nhanh < chậm
+input int    StartupEmaSlowPeriod = 50;            // Chu kỳ EMA chậm, ≥1
+input ENUM_TIMEFRAMES StartupEmaCrossTimeframe = PERIOD_M5; // Khung so cắt (PERIOD_CURRENT = khung chart)
+
 input group "━━ 4. Chờ ảo — lot & TP: luôn theo từng chân (4a–4d) ━━"
 
 input group "━━ 4a. Buy trên gốc (+) — lot / TP ━━"
 input double VGridL1BuyAbove = 0.01;
 input ENUM_LOT_SCALE VGridScaleBuyAbove = LOT_ARITHMETIC;
-input double VGridLotAddBuyAbove = 0.01;
+input double VGridLotAddBuyAbove = 0.02;
 input double VGridLotMultBuyAbove = 1.5;
 input double VGridMaxLotBuyAbove = 3.0;
 input bool   VGridTpNextBuyAbove = false;
@@ -70,7 +79,7 @@ input double VGridTpPipsBuyAbove = 0.0;
 input group "━━ 4b. Sell dưới gốc (-) — lot / TP ━━"
 input double VGridL1SellBelow = 0.01;
 input ENUM_LOT_SCALE VGridScaleSellBelow = LOT_ARITHMETIC;
-input double VGridLotAddSellBelow = 0.01;
+input double VGridLotAddSellBelow = 0.02;
 input double VGridLotMultSellBelow = 1.5;
 input double VGridMaxLotSellBelow = 3.0;
 input bool   VGridTpNextSellBelow = false;
@@ -93,11 +102,6 @@ input double VGridLotMultBuyBelow = 1.5;
 input double VGridMaxLotBuyBelow = 3.0;
 input bool   VGridTpNextBuyBelow = true;
 input double VGridTpPipsBuyBelow = 0.0;
-
-input group "━━ 5. Vốn — scale theo TEV (lot) ━━"
-input bool   EnableCapitalBasedScaling = false;  // Bật: dùng mult theo TEV. TEV = số dư lúc gắn + P/L đóng + treo (magic), không đổi vì nạp/rút
-input double CapitalGainScalePercent   = 70.0;  // X% độ nhạy 0–100: mult=1+(TEV/mốc−1)*(X/100). Ví dụ TEV +100% vs mốc, X=70 → phần nhân vào mult chỉ 70% độ lệch (tới trần). mốc=TEV lúc khởi động
-input double CapitalScaleMaxBoostPercent = 100.0; // Trần mult: tối đa = 1 + giá_trị/100 (100→×2). Giới hạn hệ số nhân lot
 
 input group "━━ 6b. Gồng lãi tổng — kích hoạt: xóa chờ ảo; chờ +1 bước lưới; SL chung tại ref; đóng SELL/BUY theo giá vs gốc; SL trượt ━━"
 input bool   EnableCompoundTotalFloatingProfit = true; // ARM/chờ bước: hết ngưỡng VÀ (Bid<tham chiếu nếu rổ trên gốc | Ask>tham chiếu nếu rổ dưới gốc) → hủy, coi như chưa gồng; chờ bước thì ManageGridOrders. Còn lại: >1 pip+ngưỡng→kích hoạt xóa chờ; +1 bước→SL@ref→đóng SELL/BUY theo Bid vs gốc; SL trượt. Max loss vẫn xét nếu bật
@@ -145,7 +149,7 @@ double gridStep;                                // Bước tham chiếu (price):
 double lastTickBid = 0.0;
 double lastTickAsk = 0.0;
 double attachBalance = 0.0;                    // Số dư ledger lúc gắn EA — không cập nhật khi nạp/rút; thành phần trong TEV
-double initialCapitalBaselineUSD = 0.0;        // TEV một lần lúc OnInit — mốc % và mult scale lot (không đổi mỗi reset phiên)
+double initialCapitalBaselineUSD = 0.0;        // TEV một lần lúc OnInit — mốc % trong tin (không đổi mỗi reset phiên)
 datetime eaAttachTime = 0;                     // OnInit time: chỉ cộng deal OUT vào eaCumulativeTradingPL khi deal >= thời điểm này
 double eaCumulativeTradingPL = 0.0;            // Tổng (profit+swap+comm) deal OUT cùng magic symbol từ lúc gắn EA — không nạp/rút
 double sessionPeakTradingEquityView = 0.0;   // Cao nhất (attachBalance + eaCumulativeTradingPL + float magic) trong phiên lưới
@@ -180,6 +184,8 @@ double g_initBaseEmaVirtSnapBase = 0.0;       // 2d: gốc tại lúc chụp (đ
 double g_initBaseEmaVirtSnapEma = 0.0;        // 2d: giá EMA tại lúc chụp (buffer shift 0)
 bool   g_initBaseEmaVirtBaseAboveEma = false; // 2d: snapBase > snapEma
 double g_initBaseEmaVirtGapPips = 0.0;        // 2d: |gốc−EMA| theo pip (10×point)
+int    g_startupEmaFastHandle = INVALID_HANDLE; // 2e: EMA nhanh — chỉ dùng khi chưa đặt gốc
+int    g_startupEmaSlowHandle = INVALID_HANDLE; // 2e: EMA chậm
 //--- Sau khi chờ ảo khớp market: chặn bổ sung lại chờ ảo cùng phía/mức cho tới khi vị thế hiện hoặc hết hạn
 #define VPGRID_VIRTUAL_EXEC_COOLDOWN_SEC 5
 struct VirtualExecCooldownEntry
@@ -214,6 +220,9 @@ void InitBaseEmaVirtGapClearZone();
 void InitBaseEmaVirtGapSnapshotFromGridInit();
 bool InitBaseEmaVirtGapSuppressesVirtual(const ENUM_ORDER_TYPE orderType, const double priceLevel, const int signedLevelNum);
 void InitBaseEmaVirtGapPurgeVirtualViolations();
+void StartupEmaCrossReleaseHandles();
+void StartupEmaCrossInitHandles();
+bool StartupEmaFastSlowCrossShift0vs1();
 
 //+------------------------------------------------------------------+
 //| True if magic belongs to this EA                                   |
@@ -748,6 +757,17 @@ void CompoundResetAfterCommonSlHit()
       Print("VDualGrid: Gồng lãi — chạm SL chung, reset ngoài lịch chạy — EA chờ giờ/ngày.");
       if(EnableResetNotification)
          SendResetNotification("Gồng lãi: chạm SL chung — ngoài lịch chạy");
+      return;
+   }
+
+   if(EnableStartupEmaFastSlowCross)
+   {
+      ArrayResize(gridLevels, 0);
+      sessionStartTime = 0;
+      basePrice = 0.0;
+      Print("VDualGrid: Gồng lãi — chạm SL chung — chờ cắt EMA nhanh/chậm để đặt gốc mới.");
+      if(EnableResetNotification)
+         SendResetNotification("Gồng lãi: SL chung — chờ EMA đặt gốc");
       return;
    }
 
@@ -1638,8 +1658,8 @@ double GetTradingEquityViewUSD()
 }
 
 //+------------------------------------------------------------------+
-//| Mốc cho % P/L và mult: TEV tại khởi động EA (đóng+treo tại thời điểm đó). |
-//| Khác số dư ledger nếu có treo — mult=1 khi TEV hiện tại = mốc. Reset phiên không làm mới mốc. |
+//| Mốc cho % P/L trong tin: TEV tại khởi động EA (đóng+treo tại thời điểm đó). |
+//| Reset phiên không làm mới mốc.                                   |
 //+------------------------------------------------------------------+
 double GetScaleCapitalReferenceUSD()
 {
@@ -1659,55 +1679,6 @@ double GetTradingEquityViewPctVsScaleBaseline()
    if(r0 <= 0.0)
       return 0.0;
    return (GetTradingEquityViewUSD() / r0 - 1.0) * 100.0;
-}
-
-//+------------------------------------------------------------------+
-//| X% dùng thực tế: clamp [0, 100] (input > 100 không có hiệu lực thêm). |
-//+------------------------------------------------------------------+
-double CapitalGainScalePercentEffective()
-{
-   double x = CapitalGainScalePercent;
-   if(x < 0.0) x = 0.0;
-   if(x > 100.0) x = 100.0;
-   return x;
-}
-
-//+------------------------------------------------------------------+
-//| Trần % tăng tối đa: clamp [0, 1e6] (mult không vượt 1 + value/100). |
-//+------------------------------------------------------------------+
-double CapitalScaleMaxBoostPercentEffective()
-{
-   double m = CapitalScaleMaxBoostPercent;
-   if(m < 0.0) m = 0.0;
-   if(m > 1000000.0) m = 1000000.0;
-   return m;
-}
-
-//+------------------------------------------------------------------+
-//| Gốc R0 = GetScaleCapitalReferenceUSD() (TEV lúc khởi động EA; không đổi khi reset phiên). |
-//| C = GetTradingEquityViewUSD (ledger gốc + P/L đóng + float magic; không cộng nạp/rút). |
-//| mult = 1 + (C/R0 - 1) * (X/100), rồi min(..., 1 + trần%/100).     |
-//+------------------------------------------------------------------+
-double GetCapitalScaleMultiplier()
-{
-   if(!EnableCapitalBasedScaling)
-      return 1.0;
-   double xEff = CapitalGainScalePercentEffective();
-   const double r0 = GetScaleCapitalReferenceUSD();
-   if(r0 <= 0.0 || xEff <= 0.0)
-      return 1.0;
-   double C = GetTradingEquityViewUSD();
-   if(C <= 0.0)
-      return 1.0;
-   double mult = 1.0 + (C / r0 - 1.0) * (xEff / 100.0);
-   double multCap = 1.0 + CapitalScaleMaxBoostPercentEffective() / 100.0;
-   if(multCap < 0.01)
-      multCap = 0.01;
-   if(mult > multCap)
-      mult = multCap;
-   if(mult < 0.01)
-      mult = 0.01;
-   return mult;
 }
 
 //+------------------------------------------------------------------+
@@ -1806,6 +1777,68 @@ bool IsSchedulingAllowedForNewSession(const datetime nowSrv)
 }
 
 //+------------------------------------------------------------------+
+//| 2e: giải phóng handle EMA khởi động.                               |
+//+------------------------------------------------------------------+
+void StartupEmaCrossReleaseHandles()
+{
+   if(g_startupEmaFastHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_startupEmaFastHandle);
+      g_startupEmaFastHandle = INVALID_HANDLE;
+   }
+   if(g_startupEmaSlowHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_startupEmaSlowHandle);
+      g_startupEmaSlowHandle = INVALID_HANDLE;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| 2e: tạo iMA nhanh/chậm (chu kỳ nhanh < chậm).                      |
+//+------------------------------------------------------------------+
+void StartupEmaCrossInitHandles()
+{
+   StartupEmaCrossReleaseHandles();
+   if(!EnableStartupEmaFastSlowCross)
+      return;
+   ENUM_TIMEFRAMES tf = StartupEmaCrossTimeframe;
+   if(tf == PERIOD_CURRENT)
+      tf = (ENUM_TIMEFRAMES)_Period;
+   int pLo = MathMax(1, MathMin(StartupEmaFastPeriod, StartupEmaSlowPeriod));
+   int pHi = MathMax(1, MathMax(StartupEmaFastPeriod, StartupEmaSlowPeriod));
+   if(pLo >= pHi)
+      pHi = pLo + 1;
+   g_startupEmaFastHandle = iMA(_Symbol, tf, pLo, 0, MODE_EMA, PRICE_CLOSE);
+   g_startupEmaSlowHandle = iMA(_Symbol, tf, pHi, 0, MODE_EMA, PRICE_CLOSE);
+   if(g_startupEmaFastHandle == INVALID_HANDLE || g_startupEmaSlowHandle == INVALID_HANDLE)
+      Print("VDualGrid: 2e — không tạo iMA EMA nhanh/chậm (chờ cắt đặt gốc).");
+}
+
+//+------------------------------------------------------------------+
+//| 2e: cắt EMA nhanh/chậm “1 shift”: so shift 0 (nến hiện tại) với 1. |
+//| Cắt lên: f0>s0 && f1<=s1; cắt xuống: f0<s0 && f1>=s1.              |
+//| Chỉ gọi khi basePrice<=0; khi đã có gốc, OnTick không gọi hàm này. |
+//+------------------------------------------------------------------+
+bool StartupEmaFastSlowCrossShift0vs1()
+{
+   if(!EnableStartupEmaFastSlowCross)
+      return true;
+   if(g_startupEmaFastHandle == INVALID_HANDLE || g_startupEmaSlowHandle == INVALID_HANDLE)
+      return false;
+   double bf[2], bs[2];
+   if(CopyBuffer(g_startupEmaFastHandle, 0, 0, 2, bf) != 2)
+      return false;
+   if(CopyBuffer(g_startupEmaSlowHandle, 0, 0, 2, bs) != 2)
+      return false;
+   const double f0 = bf[0], f1 = bf[1], s0 = bs[0], s1 = bs[1];
+   if(!MathIsValidNumber(f0) || !MathIsValidNumber(f1) || !MathIsValidNumber(s0) || !MathIsValidNumber(s1))
+      return false;
+   const bool crossUp = (f0 > s0 && f1 <= s1);
+   const bool crossDn = (f0 < s0 && f1 >= s1);
+   return (crossUp || crossDn);
+}
+
+//+------------------------------------------------------------------+
 //| Giá đặt gốc lưới: Bid hiện tại.                                    |
 //+------------------------------------------------------------------+
 double GridBasePriceAtPlacement()
@@ -1845,6 +1878,7 @@ int OnInit()
       if(g_initBaseEmaVirtGapHandle == INVALID_HANDLE)
          Print("VDualGrid: 2d — không tạo iMA (vùng cấm chờ ảo Gốc–EMA).");
    }
+   StartupEmaCrossInitHandles();
    basePrice = 0.0;
    lastTickBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    lastTickAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1870,10 +1904,22 @@ int OnInit()
       Print("VDualGrid: lọc ngày bật nhưng chưa chọn ngày nào — coi như không khóa theo ngày.");
    if(g_runtimeSessionActive)
    {
-      basePrice = GridBasePriceAtPlacement();
-      InitializeGridLevels();
-      if(EnableResetNotification)
-         SendResetNotification("EA đã khởi động");
+      if(EnableStartupEmaFastSlowCross)
+      {
+         VirtualPendingClear();
+         ArrayResize(gridLevels, 0);
+         sessionStartTime = 0;
+         Print("VDualGrid: trong lịch chạy — chờ tín hiệu EMA nhanh cắt EMA chậm mới đặt gốc (khung ", EnumToString(StartupEmaCrossTimeframe == PERIOD_CURRENT ? (ENUM_TIMEFRAMES)_Period : StartupEmaCrossTimeframe), ").");
+         if(EnableResetNotification)
+            SendResetNotification("EA khởi động — chờ EMA nhanh/chậm đặt gốc");
+      }
+      else
+      {
+         basePrice = GridBasePriceAtPlacement();
+         InitializeGridLevels();
+         if(EnableResetNotification)
+            SendResetNotification("EA đã khởi động");
+      }
    }
    else
    {
@@ -1906,17 +1952,6 @@ int OnInit()
       }
       Print("Lịch chạy — trạng thái hiện tại: ", st);
    }
-   if(EnableCapitalBasedScaling)
-   {
-      double xEff = CapitalGainScalePercentEffective();
-      double maxB = CapitalScaleMaxBoostPercentEffective();
-      Print("Scale vốn: BẬT | mult=", DoubleToString(GetCapitalScaleMultiplier(), 4), " | TEV=", DoubleToString(GetTradingEquityViewUSD(), 2), " USD | mốc TEV khởi động=", DoubleToString(GetScaleCapitalReferenceUSD(), 2), " (số dư ledger lúc gắn=", DoubleToString(attachBalance, 2), ") | X%=", DoubleToString(xEff, 1), " trần%=", DoubleToString(maxB, 1));
-      Print("Áp mult: lot L1 + bước Add (cấp số cộng).");
-      if(CapitalGainScalePercent > 100.0)
-         Print("VDualGrid: CapitalGainScalePercent > 100 → dùng 100.");
-      if(CapitalScaleMaxBoostPercent < 0.0 || CapitalScaleMaxBoostPercent > 1000000.0)
-         Print("VDualGrid: CapitalScaleMaxBoostPercent ngoài [0, 1e6] → clamp.");
-   }
    Print("========================================");
    if(g_runtimeSessionActive)
       ManageGridOrders();
@@ -1938,6 +1973,7 @@ void OnDeinit(const int reason)
       IndicatorRelease(g_initBaseEmaVirtGapHandle);
       g_initBaseEmaVirtGapHandle = INVALID_HANDLE;
    }
+   StartupEmaCrossReleaseHandles();
    // Gỡ object chart từ bản EA cũ (tên cố định)
    ObjectDelete(0, "VPGrid_BaseLine");
    ObjectDelete(0, "VPGrid_PoolGateAbove");
@@ -1962,26 +1998,38 @@ void OnTick()
       if(IsSchedulingAllowedForNewSession(TimeCurrent()))
       {
          g_runtimeSessionActive = true;
-         basePrice = GridBasePriceAtPlacement();
-         InitializeGridLevels();
-         Print("VDualGrid: vào lịch chạy — khởi động phiên mới, base=", DoubleToString(basePrice, dgt));
-         if(EnableResetNotification)
-            SendResetNotification("Vào lịch chạy — EA khởi động phiên mới");
-         ManageGridOrders();
+         if(EnableStartupEmaFastSlowCross)
+         {
+            Print("VDualGrid: vào lịch chạy — chờ EMA nhanh cắt EMA chậm để đặt gốc.");
+            if(EnableResetNotification)
+               SendResetNotification("Vào lịch — chờ EMA nhanh/chậm đặt gốc");
+         }
+         else
+         {
+            basePrice = GridBasePriceAtPlacement();
+            InitializeGridLevels();
+            Print("VDualGrid: vào lịch chạy — khởi động phiên mới, base=", DoubleToString(basePrice, dgt));
+            if(EnableResetNotification)
+               SendResetNotification("Vào lịch chạy — EA khởi động phiên mới");
+            ManageGridOrders();
+         }
       }
       return;
    }
 
    const int expectedGridLevelCount = MaxGridLevels * 2;
 
-   // Chưa có đường gốc: trong lịch chạy + trong khung giờ (nếu bật) → đặt gốc một lần rồi khởi tạo lưới.
+   // Chưa có đường gốc: trong lịch + khung giờ (nếu bật) → đặt gốc một lần rồi khởi tạo lưới. Có 2e: thêm chờ cắt EMA; đã có gốc thì không vào khối này — EA chạy tiếp, không phụ thuộc EMA.
    if(g_runtimeSessionActive && basePrice <= 0.0)
    {
       if(!IsNowWithinRunWindow(TimeCurrent()))
          return;
+      if(EnableStartupEmaFastSlowCross && !StartupEmaFastSlowCrossShift0vs1())
+         return;
       basePrice = GridBasePriceAtPlacement();
       InitializeGridLevels();
-      Print("VDualGrid: đủ điều kiện đặt gốc — base=", DoubleToString(basePrice, dgt), " (lịch + khung giờ nếu bật)");
+      Print("VDualGrid: đủ điều kiện đặt gốc — base=", DoubleToString(basePrice, dgt),
+            (EnableStartupEmaFastSlowCross ? " (lịch + khung giờ + cắt EMA shift0/1)" : " (lịch + khung giờ nếu bật)"));
       if(EnableResetNotification)
          SendResetNotification("Đủ điều kiện — bắt đầu lưới chờ ảo");
       ManageGridOrders();
@@ -2805,8 +2853,6 @@ void SendResetNotification(const string reason)
    msg += "Số dư ledger khi gắn EA: " + DoubleToString(attachBalance, 2) + " USD\n";
    msg += "TEV mốc khởi động (một lần, đóng+treo tại lúc đó): " + DoubleToString(GetScaleCapitalReferenceUSD(), 2) + " USD\n";
    msg += "Nạp/rút sau đó: không đổi mốc TEV/ledger snapshot, không đổi % trong tin theo nạp/rút; EA lưới/lot/mục tiêu theo input + P/L lệnh cùng magic.\n";
-   if(EnableCapitalBasedScaling)
-      msg += "Đang bật scale vốn: nhân mult cho lot (L1 + Add cấp số cộng); mốc TEV không đổi khi đóng lệnh/đổi lưới theo logic EA.\n";
    msg += "\n--- TRẠNG THÁI ---\n";
    msg += "Số dư broker hiện tại: " + DoubleToString(bal, 2) + " USD\n";
    msg += "Lãi/lỗ TEV vs mốc khởi động EA (đóng + treo magic, không nạp/rút vào mốc): " + (pct >= 0 ? "+" : "") + DoubleToString(pct, 2) + "%\n";
@@ -3139,11 +3185,11 @@ double VirtualGridResolvedTpPips(const ENUM_VGRID_LEG leg)
 }
 
 //+------------------------------------------------------------------+
-//| Lot bậc 1 sau scale vốn (nhóm 5).                                 |
+//| Lot bậc 1 theo input chân.                                        |
 //+------------------------------------------------------------------+
 double GetBaseLotForVirtualGridLeg(const ENUM_VGRID_LEG leg)
 {
-   return VirtualGridResolvedL1(leg) * GetCapitalScaleMultiplier();
+   return VirtualGridResolvedL1(leg);
 }
 
 double GetLotMultForVirtualGridLeg(const ENUM_VGRID_LEG leg)
@@ -3153,10 +3199,7 @@ double GetLotMultForVirtualGridLeg(const ENUM_VGRID_LEG leg)
 
 double GetLotAddForVirtualGridLeg(const ENUM_VGRID_LEG leg)
 {
-   double add = MathMax(0.0, VirtualGridResolvedAddRaw(leg));
-   if(EnableCapitalBasedScaling)
-      add *= GetCapitalScaleMultiplier();
-   return add;
+   return MathMax(0.0, VirtualGridResolvedAddRaw(leg));
 }
 
 ENUM_LOT_SCALE GetLotScaleForVirtualGridLeg(const ENUM_VGRID_LEG leg)
@@ -3360,7 +3403,7 @@ void InitializeGridLevels()
    double tevSess = GetTradingEquityViewUSD();
    sessionPeakTradingEquityView = tevSess;
    sessionMinTradingEquityView = tevSess;
-   // attachBalance / initialCapitalBaselineUSD NOT updated here — mốc scale & % chỉ lúc OnInit
+   // attachBalance / initialCapitalBaselineUSD NOT updated here — mốc % tin chỉ lúc OnInit
    double D = GridDistancePips * pnt * 10.0;
    gridStep = D;
    int totalLevels = MaxGridLevels * 2;
