@@ -40,7 +40,7 @@ enum ENUM_VGRID_LEG
 
 //——— Giao dịch: lưới, lệnh, lot ———
 input group "━━ 1. Lưới giá (GRID) ━━"
-input double GridDistancePips = 1000.0;         // Bước D giữa các mức (pip): bậc ±1 cách gốc nửa bước; các bậc kế tiếp cách D
+input double GridDistancePips = 2000.0;         // Bước D giữa các mức (pip): bậc ±1 cách gốc nửa bước; các bậc kế tiếp cách D
 input int MaxGridLevels = 50;                  // Số mức chờ ảo mỗi phía (trên và dưới giá gốc)
 
 input group "━━ 2. Lệnh chung (magic / comment) ━━"
@@ -52,7 +52,7 @@ input bool EnableAutoReplenishVirtualOrders = true; // Bật: khớp/đóng lệ
 
 input group "━━ 2d. Vùng cấm chờ ảo theo Gốc–EMA lúc khởi tạo lưới (phiên) ━━"
 input bool   EnableInitBaseEmaVirtGapBlock = true; // Bật: chỉ chụp vùng Gốc–EMA lần đầu khi vừa đặt gốc; cùng gốc cả phiên thì giữ vùng. Chỉ cấm chờ ảo Stop (không cấm Limit). base>EMA → [EMA..base] cấm Sell Stop dưới gốc; base<EMA → [base..EMA] cấm Buy Stop trên gốc
-input int    InitBaseEmaVirtGapEMAPeriod = 100;      // Chu kỳ EMA (PRICE_CLOSE), ≥1
+input int    InitBaseEmaVirtGapEMAPeriod = 50;      // Chu kỳ EMA (PRICE_CLOSE), ≥1
 input ENUM_TIMEFRAMES InitBaseEmaVirtGapEMATimeframe = PERIOD_M5; // Khung EMA lúc chụp (PERIOD_CURRENT = khung chart)
 
 // Quy ước nhóm 2e (khi bật EnableStartupEmaFastSlowCross):
@@ -62,7 +62,7 @@ input ENUM_TIMEFRAMES InitBaseEmaVirtGapEMATimeframe = PERIOD_M5; // Khung EMA l
 input group "━━ 2e. Chờ EMA nhanh cắt EMA chậm mới đặt gốc (chỉ khi chưa có gốc) ━━"
 input bool   EnableStartupEmaFastSlowCross = true; // Bật: chờ cắt EMA (shift 0 vs 1) mới đặt gốc; đã có gốc → EA chạy bình thường, không xét cắt nữa
 input int    StartupEmaFastPeriod = 1;             // Chu kỳ EMA nhanh (PRICE_CLOSE), ≥1; nếu ≥ chậm thì tự đổi thành nhanh < chậm
-input int    StartupEmaSlowPeriod = 100;           // Chu kỳ EMA chậm, ≥1
+input int    StartupEmaSlowPeriod = 50;           // Chu kỳ EMA chậm, ≥1
 input ENUM_TIMEFRAMES StartupEmaCrossTimeframe = PERIOD_M5; // Khung so cắt (PERIOD_CURRENT = khung chart)
 
 input group "━━ 4. Chờ ảo — lot & TP: luôn theo từng chân (4a–4d) ━━"
@@ -110,11 +110,11 @@ input bool   CompoundResetOnCommonSlHit = true; // Bật: giá quay đầu chạ
 
 input group "━━ 6c. Cân bằng lệnh — đóng một phía + nâng ngưỡng gồng 6b ━━"
 input bool   EnableOrderBalanceMode = true;        // Bật: khi giá xa gốc đủ bậc + đủ phút cùng phía gốc + lệch số lệnh hai phía → đóng hết lệnh phía yếu; P/L đóng (profit+swap) cộng vào ngưỡng Σ mở của 6b
-input int    OrderBalanceMinGridStepsFromBase = 4; // Tối thiểu: Bid cách đường gốc theo số bậc lưới (trên hoặc dưới), ≥1
+input int    OrderBalanceMinGridStepsFromBase = 5; // Tối thiểu: Bid cách đường gốc theo số bậc lưới (trên hoặc dưới), ≥1
 input int    OrderBalanceMinMinutesOnSideOfBase = 30; // Tối thiểu phút: Bid liên tục cùng phía đường gốc (chưa cắt qua vùng cấm quanh gốc), ≥1
 input int    OrderBalanceCooldownSeconds = 60;     // Sau mỗi lần cân bằng: chờ N giây mới xét lại (0 = không chờ)
 input bool   EnableOrderBalanceEMAFilter = true;  // Bật: N nến ĐÃ ĐÓNG gần nhất, liên tiếp theo thời gian (shift 1 = nến đóng mới nhất, 2,3… kế trước, không nhảy nến). Cả N đều close>EMA → chỉ nhánh đóng dưới gốc (+ Bid 6c); cả N close<EMA → chỉ đóng trên; lẫn hoặc có nến chạm EMA → không đóng
-input int    OrderBalanceEMAPeriod = 100;        // Chu kỳ EMA (PRICE_CLOSE) cho lọc 6c, ≥1 (ví dụ: 100)
+input int    OrderBalanceEMAPeriod = 50;        // Chu kỳ EMA (PRICE_CLOSE) cho lọc 6c, ≥1 (ví dụ: 100)
 input ENUM_TIMEFRAMES OrderBalanceEMATimeframe = PERIOD_M5; // Khung nến so close vs EMA (PERIOD_CURRENT = khung chart)
 input int    OrderBalanceEMAConfirmBars = 10;    // N = số nến đóng gần nhất, liên tiếp. Mỗi nến: close vs EMA cùng thời điểm; clamp 1..50
 
