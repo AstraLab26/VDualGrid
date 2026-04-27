@@ -216,29 +216,21 @@ input bool RunOnSaturday  = true;              // Thứ 7
 input bool RunOnSunday    = true;              // Chủ nhật
 
 input group "━━ 9. Thông báo — MT5 (push) ━━"
-input bool EnableResetNotification = true;     // Bật: push MT5 khi reset/dừng — symbol, lý do, số vốn lúc đầu, số dư hiện tại • % (TEV vs mốc gắn EA)
-input bool EnableTelegram = true;              // Bật/tắt toàn bộ gửi Telegram
-input bool EnableTelegramResetNotification = true; // Bật: khi EA reset/dừng sẽ gửi thông báo vào nhóm Telegram (nếu đã bật Telegram và cấu hình bot/chat)
-input bool EnableTelegramResetScreenshot = true;   // Bật: kèm ảnh chụp chart hiện tại trong thông báo Telegram reset/dừng
-input bool EnableTelegramStartupScreenshot = true; // Bật: khi EA khởi động hoặc vào lịch bắt đầu phiên mới, chụp chart hiện tại gửi Telegram
-input bool EnableTelegramChartScreenshot = false;  // Bật: gửi thêm ảnh chart ở thông báo Telegram
-input bool EnableTelegramChartAnalysis = false;    // Bật: gửi thêm khối phân tích chart dạng text
-input ENUM_TIMEFRAMES ChartAnalysisTimeframe = PERIOD_CURRENT; // Khung nến dùng cho phân tích chart gửi Telegram
-input int  ChartAnalysisBars = 120;                // Số nến dùng cho phân tích chart Telegram (10..500)
-input bool TelegramFunAIAnalysis = false;          // Bật: thêm đoạn phân tích "fun AI" vào tin Telegram
-input bool TelegramDeletePreviousBotMessagesOnNotify = false; // Bật: xóa các tin bot gửi trước đó trước khi gửi tin mới
-input int  TelegramScreenshotWidth = 1280;         // Độ rộng ảnh chart gửi Telegram (px)
-input int  TelegramScreenshotHeight = 720;         // Độ cao ảnh chart gửi Telegram (px)
-input string TelegramBotToken = ""; // Token bot Telegram (dạng 123456:ABC...), dùng để gửi tin reset/dừng
-input string TelegramChatID = "";   // ID nhóm/kênh Telegram nhận tin (ví dụ -100xxxxxxxxxx)
+input bool EnableResetNotification = true;     // Bật/tắt: gửi thông báo đến MT5
+input bool EnableTelegram = true;              // Bật/tắt: gửi thông báo đến Telegram
+input bool TelegramDeletePreviousBotMessagesOnNotify = false; // Bật/tắt: xóa toàn bộ tin cũ của bot trước khi gửi tin mới
+input string TelegramBotToken = "";            // Ô Token bot Telegram (dạng 123456:ABC...)
+input string TelegramChatID = "";              // Ô ID nhóm/kênh Telegram (ví dụ -100xxxxxxxxxx)
+
+// Cấu hình Telegram nâng cao giữ nguyên mặc định, không cho chỉnh bằng input.
+bool EnableTelegramResetNotification = true;
+bool EnableTelegramStartupScreenshot = true;
+int  TelegramScreenshotWidth = 1280;
+int  TelegramScreenshotHeight = 720;
 
 input group "━━ 10. Panel — bảng lợi nhuận tháng trên biểu đồ ━━"
-input bool   EnableMonthlyProfitPanel = false; // Bật: hiển thị panel lịch tháng (P/L theo ngày, magic+symbol EA); Tắt: xóa object panel
-input ENUM_BASE_CORNER MonthlyProfitPanelCorner = CORNER_LEFT_UPPER; // Góc neo panel (pixel)
-input int    MonthlyProfitPanelX = 12;         // Lệch X (pixel) từ góc neo
-input int    MonthlyProfitPanelY = 28;         // Lệch Y (pixel) từ góc neo
-input int    MonthlyProfitPanelFontPx = 9;     // Cỡ chữ cơ bản (pixel); tiêu đề lớn hơn ~+2
-input bool   EnableEaStartTimeVLine = true;    // Bật: vạch dọc + nhãn thời gian EA đặt đường gốc phiên hiện tại (TimeCurrent server) trên chart
+input bool   EnableMonthlyProfitPanel = false;       // Bật/tắt panel (kích thước cố định theo code)
+input bool   EnableBaseLineAndEaStartMarker = true;  // Bật: hiện cả đường gốc + cột dọc/nhãn thời gian đặt gốc; Tắt: ẩn cả 2
 
 //--- Global variables
 CTrade trade;
@@ -313,6 +305,9 @@ string g_baseLineObjectName = "VPGrid_BaseLine";
 datetime g_mpViewMonthStart = 0;               // 10: ngày 1 00:00:00 (server) của tháng đang xem trên panel
 ulong    g_mpLastRedrawTick = 0;               // hạn chế vẽ lại panel (ms)
 bool     g_mpPanelWasEnabled = false;          // tránh gọi DeleteAll lặp khi input tắt
+bool     g_mpAutoFollowCurrentMonth = true;    // true: tự nhảy sang tháng hiện tại khi qua tháng mới (server)
+datetime g_mpLastSeenServerMonthStart = 0;     // theo dõi mốc tháng server để reset panel khi sang tháng
+bool     g_isOnInitBootstrap = false;          // true trong lúc OnInit để tránh gửi Telegram reset trùng với tin ảnh lúc vừa gắn EA
 long     g_telegramNotifyMsgIds[];             // lưu message_id Telegram bot để tùy chọn xóa tin cũ
 
 //--- Sau khi chờ ảo khớp market: chặn bổ sung lại chờ ảo cùng phía/mức cho tới khi vị thế hiện hoặc hết hạn
@@ -431,6 +426,25 @@ bool TryParseLegFromOrderComment(const string cmt, ENUM_VGRID_LEG &legOut)
    if(StringFind(cmt, "|E|") >= 0) { legOut = VGRID_LEG_BUY_ABOVE_E; return true; }
    if(StringFind(cmt, "|F|") >= 0) { legOut = VGRID_LEG_SELL_BELOW_F; return true; }
    return false;
+}
+
+bool TryParseSignedLevelFromOrderComment(const string cmt, int &signedLevelOut)
+{
+   signedLevelOut = 0;
+   const int p = StringFind(cmt, "|L");
+   if(p < 0)
+      return false;
+   const int s = p + 2;
+   if(s >= StringLen(cmt))
+      return false;
+   string levelStr = StringSubstr(cmt, s);
+   const int tailSep = StringFind(levelStr, "|");
+   if(tailSep >= 0)
+      levelStr = StringSubstr(levelStr, 0, tailSep);
+   if(StringLen(levelStr) < 1)
+      return false;
+   signedLevelOut = (int)StringToInteger(levelStr);
+   return (signedLevelOut != 0);
 }
 
 bool IsLegBuyAboveFamily(const ENUM_VGRID_LEG leg)
@@ -1999,12 +2013,16 @@ bool ProcessOrderBalanceMode()
 
    ulong weakTickets[];
    double weakPnLs[];
+   int weakLevels[];
    ulong strongTickets[];
    double strongPnLs[];
+   int strongLevels[];
    ArrayResize(weakTickets, 0);
    ArrayResize(weakPnLs, 0);
+   ArrayResize(weakLevels, 0);
    ArrayResize(strongTickets, 0);
    ArrayResize(strongPnLs, 0);
+   ArrayResize(strongLevels, 0);
 
    const bool closeWeakBelow = (wantCloseBelow && !wantCloseAbove);
    const bool closeWeakAbove = (!wantCloseBelow && wantCloseAbove);
@@ -2017,8 +2035,15 @@ bool ProcessOrderBalanceMode()
       if(ticket <= 0 || !PositionIsOurSymbolAndMagic(ticket))
          continue;
       ENUM_VGRID_LEG legPos;
-      if(!TryParseLegFromOrderComment(PositionGetString(POSITION_COMMENT), legPos))
+      const string posComment = PositionGetString(POSITION_COMMENT);
+      if(!TryParseLegFromOrderComment(posComment, legPos))
          continue;
+      int signedLevel = 0;
+      if(!TryParseSignedLevelFromOrderComment(posComment, signedLevel))
+      {
+         if(!FindSignedLevelNumForPrice(PositionGetDouble(POSITION_PRICE_OPEN), signedLevel))
+            continue;
+      }
       const double op = PositionGetDouble(POSITION_PRICE_OPEN);
       const double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
 
@@ -2030,8 +2055,10 @@ bool ProcessOrderBalanceMode()
             int nWeak = ArraySize(weakTickets);
             ArrayResize(weakTickets, nWeak + 1);
             ArrayResize(weakPnLs, nWeak + 1);
+            ArrayResize(weakLevels, nWeak + 1);
             weakTickets[nWeak] = ticket;
             weakPnLs[nWeak] = pnl;
+            weakLevels[nWeak] = MathAbs(signedLevel);
          }
          // Đóng 2 phía theo cặp: BUY A/E trên gốc, số lượng bằng số lệnh yếu đã chọn đóng.
          else if(op > basePrice + baseEps && IsLegBuyAboveFamily(legPos))
@@ -2039,8 +2066,10 @@ bool ProcessOrderBalanceMode()
             int nStrong = ArraySize(strongTickets);
             ArrayResize(strongTickets, nStrong + 1);
             ArrayResize(strongPnLs, nStrong + 1);
+            ArrayResize(strongLevels, nStrong + 1);
             strongTickets[nStrong] = ticket;
             strongPnLs[nStrong] = pnl;
+            strongLevels[nStrong] = MathAbs(signedLevel);
          }
       }
       else if(closeWeakAbove)
@@ -2051,8 +2080,10 @@ bool ProcessOrderBalanceMode()
             int nWeak = ArraySize(weakTickets);
             ArrayResize(weakTickets, nWeak + 1);
             ArrayResize(weakPnLs, nWeak + 1);
+            ArrayResize(weakLevels, nWeak + 1);
             weakTickets[nWeak] = ticket;
             weakPnLs[nWeak] = pnl;
+            weakLevels[nWeak] = MathAbs(signedLevel);
          }
          // Đóng 2 phía theo cặp: SELL B/F dưới gốc.
          else if(op < basePrice - baseEps && IsLegSellBelowFamily(legPos))
@@ -2060,8 +2091,10 @@ bool ProcessOrderBalanceMode()
             int nStrong = ArraySize(strongTickets);
             ArrayResize(strongTickets, nStrong + 1);
             ArrayResize(strongPnLs, nStrong + 1);
+            ArrayResize(strongLevels, nStrong + 1);
             strongTickets[nStrong] = ticket;
             strongPnLs[nStrong] = pnl;
+            strongLevels[nStrong] = MathAbs(signedLevel);
          }
       }
    }
@@ -2069,9 +2102,12 @@ bool ProcessOrderBalanceMode()
    const int weakCount = ArraySize(weakTickets);
    if(weakCount < 1)
       return false;
-   int strongCloseCount = 0;
-   if(EnableOrderBalanceCloseBothSidesPaired)
-      strongCloseCount = MathMin(ArraySize(strongTickets), weakCount);
+   int maxWeakLevel = 0;
+   for(int wl = 0; wl < ArraySize(weakLevels); wl++)
+   {
+      if(weakLevels[wl] > maxWeakLevel)
+         maxWeakLevel = weakLevels[wl];
+   }
 
    ulong toClose[];
    double toClosePnL[];
@@ -2090,8 +2126,16 @@ bool ProcessOrderBalanceMode()
       toClosePnL[n] = weakPnLs[w];
       toCloseIsWeak[n] = true;
    }
-   for(int s = 0; s < strongCloseCount; s++)
+   for(int s = 0; s < ArraySize(strongTickets); s++)
    {
+      if(!EnableOrderBalanceCloseBothSidesPaired)
+         break;
+      // Chế độ đóng 2 phần: đóng phía mạnh từ gốc đến đúng bậc xa nhất đã đóng ở phía yếu.
+      if(strongLevels[s] > maxWeakLevel)
+         continue;
+      // Phía đối ứng chỉ đóng các lệnh dương (đang có lãi).
+      if(strongPnLs[s] <= 0.0)
+         continue;
       const int n = ArraySize(toClose);
       ArrayResize(toClose, n + 1);
       ArrayResize(toClosePnL, n + 1);
@@ -2168,9 +2212,10 @@ bool ProcessOrderBalanceMode()
    const double totalClosedPnL = weakClosedPnL + strongClosedPnL;
    string pairedLog = "";
    if(EnableOrderBalanceCloseBothSidesPaired)
-      pairedLog = " | paired 2 phía: yếu " + IntegerToString(weakClosed) + " (" + DoubleToString(weakClosedPnL, 2)
+      pairedLog = " | paired 2 phía theo bậc: yếu " + IntegerToString(weakClosed) + " (" + DoubleToString(weakClosedPnL, 2)
                   + " USD), mạnh " + IntegerToString(strongClosed) + " (" + DoubleToString(strongClosedPnL, 2)
-                  + " USD) | carry cộng theo tổng phần âm đã đóng";
+                  + " USD, chỉ lệnh dương), max bậc yếu=" + IntegerToString(maxWeakLevel)
+                  + " | carry cộng theo tổng phần âm đã đóng";
    Print("VDualGrid: Cân bằng lệnh (6c) — đóng ", closed, " vị thế ",
          (wantCloseBelow ? "dưới" : "trên"), " gốc | P/L đóng (profit+swap) ", DoubleToString(totalClosedPnL, 2),
          " USD | điều chỉnh ngưỡng gồng Σ mở → ", DoubleToString(GetCompoundFloatingTriggerThresholdUsd(), 2), " USD",
@@ -2807,6 +2852,8 @@ void MonthlyProfitPanelOnInitState()
    MqlDateTime now;
    TimeToStruct(TimeTradeServer(), now);
    g_mpViewMonthStart = MpMonthStartServer(now.year, now.mon);
+    g_mpLastSeenServerMonthStart = g_mpViewMonthStart;
+   g_mpAutoFollowCurrentMonth = true;
 }
 
 void MonthlyProfitPanelOnTradeRefresh()
@@ -2911,16 +2958,27 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
    MqlDateTime srvNow;
    TimeToStruct(TimeTradeServer(), srvNow);
    const datetime todayMonthStart = MpMonthStartServer(srvNow.year, srvNow.mon);
+   if(g_mpLastSeenServerMonthStart <= 0)
+      g_mpLastSeenServerMonthStart = todayMonthStart;
+   if(todayMonthStart != g_mpLastSeenServerMonthStart)
+   {
+      // Sang tháng mới: ép panel về tháng hiện tại để tổng tháng bắt đầu lại từ 0.
+      g_mpLastSeenServerMonthStart = todayMonthStart;
+      g_mpViewMonthStart = todayMonthStart;
+      g_mpAutoFollowCurrentMonth = true;
+   }
+   if(g_mpAutoFollowCurrentMonth && g_mpViewMonthStart != todayMonthStart)
+      g_mpViewMonthStart = todayMonthStart;
    const bool isViewingCurrentMonth = (g_mpViewMonthStart == todayMonthStart);
 
    MonthlyProfitPanelDeleteAll();
 
-   const ENUM_BASE_CORNER crn = MonthlyProfitPanelCorner;
-   const int ox = MonthlyProfitPanelX;
-   const int oy = MonthlyProfitPanelY;
-   const int f0 = MathMax(7, MonthlyProfitPanelFontPx);
+   const ENUM_BASE_CORNER crn = CORNER_LEFT_UPPER;
+   const int ox = 12;
+   const int oy = 28;
+   const int f0 = 9;
    const int fTitle = f0 + 2;
-   const int fBig = f0 + 5;
+   const int fBig = f0 + 4;
 
    const color C_BG = C'14,16,20';
    const color C_CARD = C'28,31,38';
@@ -2931,8 +2989,8 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
    const color C_RED = C'255,120,120';
    const color C_BLUE = C'60,150,255';
 
-   const int W = 720;
-   const int H = 500;
+   const int W = 900;
+   const int H = 560;
    const int pad = 10;
    int y = oy;
 
@@ -2942,40 +3000,48 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
    MpLabelCreate(MP_PREFIX "hdr", ox + pad, y, "BẢNG LỢI NHUẬN THÁNG", fTitle, C_TEXT, true, crn);
    y += 26;
 
-   const int cardW = (W - pad * 4) / 3;
-   const int cardH = 72;
+   const int cardW = (W - pad * 5) / 4;
+   const int cardH = 82;
    const int gap = pad;
    int cx = ox + pad;
 
    MpRectCreate(MP_PREFIX "c1", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
-   MpLabelCreate(MP_PREFIX "c1t", cx + 8, y + 6, "TỔNG LỢI NHUẬN THÁNG", f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MP_PREFIX "c1t", cx + 8, y + 6, "TỔNG LỢI NHUẬN THÁNG", f0, C_MUTED, false, crn);
    string sTot = (monthTotal >= 0.0 ? "+" : "") + DoubleToString(monthTotal, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY);
    MpLabelCreate(MP_PREFIX "c1v", cx + 8, y + 24, sTot, fBig, (monthTotal >= 0.0 ? C_GREEN : C_RED), true, crn);
    if(isViewingCurrentMonth)
-      MpLabelCreate(MP_PREFIX "c1b", cx + cardW - 78, y + 28, "THÁNG NÀY", f0 - 2, C_GREEN, true, crn);
+      MpLabelCreate(MP_PREFIX "c1b", cx + cardW - 86, y + 30, "THÁNG NÀY", f0 - 1, C_GREEN, true, crn);
 
    cx += cardW + gap;
    MpRectCreate(MP_PREFIX "c2", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
-   MpLabelCreate(MP_PREFIX "c2t", cx + 8, y + 6, "LỢI NHUẬN TB NGÀY", f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MP_PREFIX "c2t", cx + 8, y + 6, "LỢI NHUẬN TB NGÀY", f0, C_MUTED, false, crn);
    string sAvg = (avgDaily >= 0.0 ? "+" : "") + DoubleToString(avgDaily, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY);
    MpLabelCreate(MP_PREFIX "c2v", cx + 8, y + 24, sAvg, fBig, C_TEXT, true, crn);
-   MpLabelCreate(MP_PREFIX "c2s", cx + 8, y + 50, IntegerToString(tradingDays) + " Ngày giao dịch", f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MP_PREFIX "c2s", cx + 8, y + 58, IntegerToString(tradingDays) + " Ngày giao dịch", f0 - 1, C_MUTED, false, crn);
 
    cx += cardW + gap;
    MpRectCreate(MP_PREFIX "c3", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
-   MpLabelCreate(MP_PREFIX "c3t", cx + 8, y + 6, "TỶ LỆ THẮNG", f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MP_PREFIX "c3t", cx + 8, y + 6, "TỶ LỆ THẮNG", f0, C_MUTED, false, crn);
    MpLabelCreate(MP_PREFIX "c3v", cx + 8, y + 24, DoubleToString(winRatePct, 1) + "%", fBig, C_TEXT, true, crn);
    const string trendSub = (totalClosedDeals == 0 ? "Chưa có lệnh đóng" : (winRatePct >= 50.0 ? "Xu hướng tăng" : "Xu hướng giảm"));
-   MpLabelCreate(MP_PREFIX "c3s", cx + 8, y + 50, trendSub, f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MP_PREFIX "c3s", cx + 8, y + 58, trendSub, f0 - 1, C_MUTED, false, crn);
 
-   y += cardH + 10;
+   cx += cardW + gap;
+   MpRectCreate(MP_PREFIX "c4", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
+   MpLabelCreate(MP_PREFIX "c4t", cx + 8, y + 6, "LỢI NHUẬN TỪ LÚC GẮN EA", f0, C_MUTED, false, crn);
+   const double attachProfitUsd = eaCumulativeTradingPL;
+   string sAttach = (attachProfitUsd >= 0.0 ? "+" : "") + DoubleToString(attachProfitUsd, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY);
+   MpLabelCreate(MP_PREFIX "c4v", cx + 8, y + 24, sAttach, fBig, (attachProfitUsd >= 0.0 ? C_GREEN : C_RED), true, crn);
+   MpLabelCreate(MP_PREFIX "c4s", cx + 8, y + 58, "Không reset theo tháng", f0 - 1, C_MUTED, false, crn);
+
+   y += cardH + 16;
 
    MpButtonCreate(MP_PREFIX "prev", ox + pad, y, 26, 22, "<", crn);
    string monthTitle = "Tháng " + IntegerToString(vmon) + ", " + IntegerToString(vy);
    MpLabelCreate(MP_PREFIX "month", ox + pad + 34, y + 3, monthTitle, f0, C_TEXT, true, crn);
-   MpButtonCreate(MP_PREFIX "next", ox + pad + 34 + 130, y, 26, 22, ">", crn);
+   MpButtonCreate(MP_PREFIX "next", ox + pad + 34 + 150, y, 26, 22, ">", crn);
 
-   int legX = ox + W - pad - 240;
+   int legX = ox + W - pad - 300;
    MpLabelCreate(MP_PREFIX "lg0", legX, y + 3, "●", f0 - 1, C_GREEN, false, crn);
    legX += 14;
    MpLabelCreate(MP_PREFIX "lg1", legX, y + 3, "Lợi nhuận", f0 - 1, C_MUTED, false, crn);
@@ -2988,17 +3054,17 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
    legX += 14;
    MpLabelCreate(MP_PREFIX "lg5", legX, y + 3, "Hôm nay", f0 - 1, C_MUTED, false, crn);
 
-   y += 30;
+   y += 36;
    const string dowNames[7] = {"CHỦ NHẬT", "THỨ HAI", "THỨ BA", "THỨ TƯ", "THỨ NĂM", "THỨ SÁU", "THỨ BẢY"};
    const int cellW = (W - pad * 2) / 7;
-   const int cellH = 52;
+   const int cellH = 56;
    int hx = ox + pad;
    for(int c = 0; c < 7; c++)
    {
       MpLabelCreate(MP_PREFIX "hd" + IntegerToString(c), hx + 2, y, dowNames[c], f0 - 1, C_MUTED, false, crn);
       hx += cellW;
    }
-   y += 20;
+   y += 24;
 
    MqlDateTime first;
    first.year = vy;
@@ -3126,6 +3192,10 @@ void MonthlyProfitPanelShiftMonth(const int deltaMon)
       yr--;
    }
    g_mpViewMonthStart = MpMonthStartServer(yr, m);
+   MqlDateTime now;
+   TimeToStruct(TimeTradeServer(), now);
+   const datetime todayMonthStart = MpMonthStartServer(now.year, now.mon);
+   g_mpAutoFollowCurrentMonth = (g_mpViewMonthStart == todayMonthStart);
    g_mpLastRedrawTick = 0;
    MonthlyProfitPanelRedrawIfNeeded(true);
 }
@@ -3144,6 +3214,11 @@ double GridBasePriceAtPlacement()
 void UpdateBaseLineOnChart()
 {
    EaStartTimeObjectsApplyOrRemove();
+   if(!EnableBaseLineAndEaStartMarker)
+   {
+      ObjectDelete(0, g_baseLineObjectName);
+      return;
+   }
    if(basePrice <= 0.0 || !MathIsValidNumber(basePrice))
    {
       ObjectDelete(0, g_baseLineObjectName);
@@ -3172,7 +3247,7 @@ void UpdateBaseLineOnChart()
 void EaStartTimeObjectsApplyOrRemove()
 {
    const datetime baseAnchorTime = (basePrice > 0.0 && sessionStartTime > 0 ? sessionStartTime : 0);
-   if(!EnableEaStartTimeVLine || baseAnchorTime <= 0)
+   if(!EnableBaseLineAndEaStartMarker || baseAnchorTime <= 0)
    {
       ObjectDelete(0, VDGRID_EA_START_VLINE);
       ObjectDelete(0, VDGRID_EA_START_TEXT);
@@ -3230,6 +3305,7 @@ void EaStartTimeObjectsApplyOrRemove()
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   g_isOnInitBootstrap = true;
    eaAttachTime = TimeCurrent();
    MagicAA = MagicNumber;
    trade.SetExpertMagicNumber(MagicAA);
@@ -3344,7 +3420,6 @@ int OnInit()
          if(EnableResetNotification)
          {
             SendResetNotification("EA khởi động — chờ EMA nhanh/chậm đặt gốc");
-            SendStartupTelegramScreenshot("EA khởi động — chờ EMA nhanh/chậm đặt gốc");
          }
       }
       else
@@ -3357,7 +3432,6 @@ int OnInit()
             if(EnableResetNotification)
             {
                SendResetNotification("EA đã khởi động");
-               SendStartupTelegramScreenshot("EA đã khởi động");
             }
          }
          else
@@ -3370,7 +3444,6 @@ int OnInit()
             if(EnableResetNotification)
             {
                SendResetNotification("EA khởi động — chờ RSI đặt gốc");
-               SendStartupTelegramScreenshot("EA khởi động — chờ RSI đặt gốc");
             }
          }
       }
@@ -3425,6 +3498,7 @@ int OnInit()
    }
    EaStartTimeObjectsApplyOrRemove();
    SendStartupTelegramScreenshot("EA vừa gắn vào biểu đồ");
+   g_isOnInitBootstrap = false;
    return(INIT_SUCCEEDED);
 }
 
@@ -3517,7 +3591,6 @@ void OnTick()
             if(EnableResetNotification)
             {
                SendResetNotification("Vào lịch — chờ EMA nhanh/chậm đặt gốc");
-               SendStartupTelegramScreenshot("Vào lịch — chờ EMA nhanh/chậm đặt gốc");
             }
          }
          else
@@ -3531,7 +3604,6 @@ void OnTick()
                if(EnableResetNotification)
                {
                   SendResetNotification("Vào lịch chạy — EA khởi động phiên mới");
-                  SendStartupTelegramScreenshot("Vào lịch chạy — EA khởi động phiên mới");
                }
                ManageGridOrders();
             }
@@ -3544,7 +3616,6 @@ void OnTick()
                if(EnableResetNotification)
                {
                   SendResetNotification("Vào lịch — chờ RSI đặt gốc");
-                  SendStartupTelegramScreenshot("Vào lịch — chờ RSI đặt gốc");
                }
             }
          }
@@ -3573,7 +3644,6 @@ void OnTick()
       if(EnableResetNotification)
       {
          SendResetNotification("Đủ điều kiện — bắt đầu lưới chờ ảo");
-         SendStartupTelegramScreenshot("Đủ điều kiện — bắt đầu lưới chờ ảo");
       }
       ManageGridOrders();
       return;
@@ -3954,9 +4024,9 @@ void TelegramPostAppendBytes(char &post[], int &postLen, const uchar &data[], co
 //+------------------------------------------------------------------+
 //| Chụp chart hiện tại (GIF) + POST Telegram sendPhoto (multipart).  |
 //+------------------------------------------------------------------+
-void SendTelegramChartScreenshotIfEnabled(const string caption, const bool forceSend = false)
+void SendTelegramChartScreenshotIfEnabled(const string caption)
 {
-   if(!EnableTelegram || (!EnableTelegramChartScreenshot && !forceSend))
+   if(!EnableTelegram)
       return;
    if(StringLen(TelegramBotToken) < 10 || StringLen(TelegramChatID) < 5)
       return;
@@ -4057,321 +4127,6 @@ void SendTelegramChartScreenshotIfEnabled(const string caption, const bool force
 //+------------------------------------------------------------------+
 //| Chọn 1 trong n chuỗi theo seed (phân tích "AI" vui, không gọi mạng). |
 //+------------------------------------------------------------------+
-string FunAI_Pick5(const int seed, const string s0, const string s1, const string s2, const string s3, const string s4)
-{
-   int i = seed % 5;
-   if(i < 0) i += 5;
-   if(i == 0) return s0;
-   if(i == 1) return s1;
-   if(i == 2) return s2;
-   if(i == 3) return s3;
-   return s4;
-}
-
-//+------------------------------------------------------------------+
-//| Khối phân tích vui cho Telegram (if/else + RNG — không phải LLM).   |
-//+------------------------------------------------------------------+
-string BuildFunAIAnalysisTelegram(const string reason, const double pct, const double maxLossUSD,
-                                  const string chartCompactVi)
-{
-   uint u = (uint)TimeCurrent() + (uint)(StringLen(reason) * 131U) + (uint)(MathAbs(pct) * 17.0);
-   int s0 = (int)(u % 5);
-   int s1 = (int)((u / 5U) % 5);
-   int s2 = (int)((u / 25U) % 5);
-
-   string out = "Phân tích AI\n\n";
-
-   string ev = "";
-   if(StringFind(reason, "EA đã dừng") >= 0)
-      ev = FunAI_Pick5(s0,
-         "Tạm biệt nha — EA về tắm rửa, RAM đi ngủ sớm, tick history vẫn flex trong quá khứ.",
-         "Hết show! Đèn tắt, khán giả vỗ tay (hoặc ngủ gật), cả làng đi ăn mì.",
-         "OnDeinit = 'hẹn gặp lại sau khi bấm attach' — đừng buồn như chia tay người yêu, nó chỉ là code thôi.",
-         "Coi log lý do dừng nha — đừng đổ tại Wi-Fi hàng xóm trừ khi thật sự lag.",
-         "Độ ẩm phòng vô tội… trừ khi bạn đánh đổ nước lên máy, lúc đó sorry bro.");
-   else if(StringFind(reason, "EA đã khởi động") >= 0)
-      ev = FunAI_Pick5(s0,
-         "Lên sóng rùi nè! Grid căng sẵn, thị trường đang make-up hậu trường — mình cầm popcorn chờ hạ cánh.",
-         "Từ giờ drama là của giá + lot; nút nguồn chỉ để bật quạt thôi bạn hiền ơi.",
-         "Margin theo dõi như trend TikTok — cười nhẹ thôi, đừng FOMO quá tay.",
-         "Hệ thống online — cà phê tuỳ gu, kỷ luật thì pha nóng hổi mới ngon!",
-         "Team tự động đã join party: chart chưa giàu ngay nhưng đã có đồng minh rồi đó.");
-   else
-      ev = FunAI_Pick5(s0,
-         "Lý do hơi ngớ ngẩn? Không sa, meme cũng cần nguyên liệu — mình vẫn bắt trend cho đủ khung hình.",
-         "Không gắn nhãn là để tự do nghệ thuật — EA xin một câu triết lý fake cho đẹp story.",
-         "Phân tích đa chiều = nhìn một chiều mà tỏ vẻ sâu — có biến là đủ content.",
-         "Không hiểu lý do thì uống nước, F5 chart, thở — survival kit của trader đó bạn ơi.",
-         "AI trong đầu mình gật gù như hiểu hết — đừng tin, nó cũng đang Google dở.");
-
-   string pl = "";
-   if(pct >= 5.0)
-      pl = "P/L TEV vs mốc khởi động: +" + DoubleToString(pct, 2) + "%. " + FunAI_Pick5(s1,
-            "Woohoo xanh bụi! Thắt dây an toàn cảm xúc — tàu lượn lên dốc hét được nhưng đừng buông tay.",
-            "Số đẹp phết — mai chart đổi kịch như đạo diễn uống quá caffeine, coi chừng plot twist.",
-            "Đừng tưởng skill vĩnh viễn — đôi khi chỉ là sóng cho mượn, trả hồi còn lại.",
-            "Kiêu nhẹ thôi nha — bot không khoe được, bạn cũng đừng khoe hộ nó quá.",
-            "Chúc mừng! Giai đoạn dễ tự tin quá đà — bình tĩnh như ninja đi gác.");
-   else if(pct > 0.05)
-      pl = "P/L TEV vs mốc khởi động: +" + DoubleToString(pct, 2) + "%. " + FunAI_Pick5(s1,
-            "Xanh nhạt matcha vibe — chill chill, chưa cần chạy vào phòng điều hành hò hét.",
-            "Lãi tí cũng là lãi — lãi kép thích người không drama, drama để hội trưởng drama lo.",
-            "Thắng nhẹ: đủ tự tin, chưa đủ màn hình cong — tiết kiệm ví, eco-friendly.",
-            "Máy êm như xe đủ xăng — chưa nổ nhưng có ga là được.",
-            "Vi mô ổn — vĩ mô thi riêng, coi như môn phụ kế bên.");
-   else if(pct >= -0.05)
-      pl = "P/L TEV vs mốc khởi động: " + DoubleToString(pct, 2) + "%. " + FunAI_Pick5(s1,
-            "Mode Schrödinger: thắng hay thua tùy mood — chart không nói, chỉ nháy mắt.",
-            "Hòa vốn cảm xúc: P/L im lặng nhưng tâm lý đang rap battle.",
-            "Phẳng như ly soda quên nắp — không sai, chỉ hơi chán tí.",
-            "Vùng F5 thiền: hoặc tĩnh tâm hoặc spam refresh như game idle.",
-            "Không lên không xuống — ít nhất log có twist, đọc cho đỡ buồn ngủ.");
-   else
-      pl = "P/L TEV vs mốc khởi động: " + DoubleToString(pct, 2) + "%. " + FunAI_Pick5(s1,
-            "Đỏ hơi chói — coi như gym free cho khả năng chịu đựng, không tính phí PT.",
-            "Drawdown = học phí; không học được gì thì coi như Netflix buồn nhưng vẫn có phụ đề.",
-            "Số âm không định nghĩa con người bạn — chỉ định nghĩa đoạn curve đang vẽ dở.",
-            "Thở + check risk; đừng capslock cãi chart — chart không đọc comment đâu.",
-            "Ôm ấm ảo: sóng qua hết drama, EA vẫn chạy input bạn gõ — team work đó!");
-
-   string dd = "";
-   if(maxLossUSD > 1.0)
-      dd = "Biên độ sụt giảm (equity EA) ~ " + DoubleToString(maxLossUSD, 2) + " USD. " + FunAI_Pick5(s2,
-            "Tàu lượn có đoạn lao — dây an toàn vốn siết chặt nha bạn hiền.",
-            "Số này mà giật mình thì lot có thể đang biên kịch kinh dị — cân nhắc rating.",
-            "Đỉnh đáy chỉ spoiler quá khứ — không leak tập sau.",
-            "Drawdown bự = dataset; bình tĩnh = giảm học phí, panic = mua vé VIP.",
-            "Thị trường: 'cầm hộ biến động'. Bạn: 'mình giữ risk như giữ crush.'");
-   else
-      dd = "Drawdown nhỏ xíu — EA mới tập đi hoặc bạn đi dạo trên ray tàu lượn cho vui.";
-
-   string chartNote = "";
-   if(StringLen(chartCompactVi) > 3)
-      chartNote = "\n\nGợi nhanh chart: " + chartCompactVi + " — vibe nến cho đủ màu, không phải lệnh nha.";
-
-   return out + ev + "\n\n" + pl + "\n" + dd + chartNote;
-}
-
-
-//+------------------------------------------------------------------+
-//| Nhãn khung thời gian ngắn (VN context).                            |
-//+------------------------------------------------------------------+
-string PeriodToShortLabelVi(const ENUM_TIMEFRAMES tf)
-{
-   ENUM_TIMEFRAMES t = tf;
-   if(t == PERIOD_CURRENT)
-      t = (ENUM_TIMEFRAMES)Period();
-   switch(t)
-   {
-      case PERIOD_M1:  return "M1";
-      case PERIOD_M2:  return "M2";
-      case PERIOD_M3:  return "M3";
-      case PERIOD_M4:  return "M4";
-      case PERIOD_M5:  return "M5";
-      case PERIOD_M6:  return "M6";
-      case PERIOD_M10: return "M10";
-      case PERIOD_M12: return "M12";
-      case PERIOD_M15: return "M15";
-      case PERIOD_M20: return "M20";
-      case PERIOD_M30: return "M30";
-      case PERIOD_H1:  return "H1";
-      case PERIOD_H2:  return "H2";
-      case PERIOD_H3:  return "H3";
-      case PERIOD_H4:  return "H4";
-      case PERIOD_H6:  return "H6";
-      case PERIOD_H8:  return "H8";
-      case PERIOD_H12: return "H12";
-      case PERIOD_D1:  return "D1";
-      case PERIOD_W1:  return "W1";
-      case PERIOD_MN1: return "MN1";
-      default:         return "TF";
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Mô tả độ dài một nến (khung hiện tại).                            |
-//+------------------------------------------------------------------+
-string CandleSpanLabelVi(const int secBar)
-{
-   if(secBar <= 0)
-      return "?";
-   if(secBar >= 86400)
-      return IntegerToString(secBar / 86400) + " ngày/nến";
-   if(secBar >= 3600)
-      return IntegerToString(secBar / 3600) + " giờ/nến";
-   if(secBar >= 60)
-      return IntegerToString(secBar / 60) + " phút/nến";
-   return IntegerToString(secBar) + " giây/nến";
-}
-
-//+------------------------------------------------------------------+
-//| Thống kê nến realtime (CopyRates) — full block + dòng gọn (push/AI local). |
-//+------------------------------------------------------------------+
-void BuildRealtimeChartAnalysisVI(const string sym, const int symDigits, string &fullOut, string &compactOut)
-{
-   fullOut = "";
-   compactOut = "";
-   if(!EnableTelegramChartAnalysis)
-      return;
-
-   int barsReq = ChartAnalysisBars;
-   if(barsReq < 10)
-      barsReq = 10;
-   if(barsReq > 500)
-      barsReq = 500;
-
-   ENUM_TIMEFRAMES tf = ChartAnalysisTimeframe;
-   if(tf == PERIOD_CURRENT)
-      tf = (ENUM_TIMEFRAMES)Period();
-
-   MqlRates rates[];
-   ArraySetAsSeries(rates, true);
-   int n = CopyRates(sym, tf, 0, barsReq, rates);
-   string tfLab = PeriodToShortLabelVi(tf);
-
-   if(n < 5)
-   {
-      fullOut = "--- BIỂU ĐỒ (thời gian thực) ---\n(Không đủ dữ liệu nến — kiểm tra symbol/khung hoặc history.)";
-      compactOut = tfLab + ": không đủ nến";
-      return;
-   }
-
-   double c0 = rates[0].close;
-   double o0 = rates[0].open;
-   int iOld = n - 1;
-   double cOld = rates[iOld].close;
-   double chgPct = (cOld > 0.0) ? ((c0 / cOld - 1.0) * 100.0) : 0.0;
-
-   double rangeHigh = rates[0].high;
-   double rangeLow = rates[0].low;
-   for(int i = 1; i < n; i++)
-   {
-      if(rates[i].high > rangeHigh)
-         rangeHigh = rates[i].high;
-      if(rates[i].low < rangeLow)
-         rangeLow = rates[i].low;
-   }
-
-   int bull = 0, bear = 0;
-   int look = 12;
-   if(look > n)
-      look = n;
-   for(int j = 0; j < look; j++)
-   {
-      if(rates[j].close >= rates[j].open)
-         bull++;
-      else
-         bear++;
-   }
-
-   int k5 = 5;
-   if(k5 > n)
-      k5 = n;
-   int k20 = 20;
-   if(k20 > n)
-      k20 = n;
-   double sum5 = 0.0, sum20 = 0.0;
-   for(int k = 0; k < k5; k++)
-      sum5 += rates[k].close;
-   for(int k = 0; k < k20; k++)
-      sum20 += rates[k].close;
-   double sma5 = sum5 / k5;
-   double sma20 = sum20 / k20;
-
-   int atrN = 14;
-   if(atrN > n)
-      atrN = n;
-   double sumATR = 0.0;
-   for(int a = 0; a < atrN; a++)
-      sumATR += rates[a].high - rates[a].low;
-   double atrAvg = (atrN > 0) ? sumATR / atrN : 0.0;
-
-   string bias = "";
-   if(c0 > sma5 && sma5 > sma20)
-      bias = "nghiêng tăng ngắn hạn (giá > MA5 > MA20).";
-   else if(c0 < sma5 && sma5 < sma20)
-      bias = "nghiêng giảm ngắn hạn (giá < MA5 < MA20).";
-   else
-      bias = "đan xen / đi ngang nhanh — MA không xếp rõ xu hướng.";
-
-   string lastBar = (c0 >= o0) ? "nến đang hình thành: tăng (đóng ≥ mở)." : "nến đang hình thành: giảm (đóng < mở).";
-
-   fullOut = "--- BIỂU ĐỒ (thời gian thực, lúc báo) ---\n";
-   fullOut += "Khung: " + tfLab + " | Số nến: " + IntegerToString(n) + "\n";
-   fullOut += "Giá đóng mới nhất: " + DoubleToString(c0, symDigits) + " | " + lastBar + "\n";
-   fullOut += "So với đóng nến cũ nhất trong cửa sổ (" + IntegerToString(n) + " nến): " + (chgPct >= 0.0 ? "+" : "") + DoubleToString(chgPct, 2) + "%\n";
-   fullOut += "Đỉnh/đáy trong " + IntegerToString(n) + " nến: " + DoubleToString(rangeHigh, symDigits) + " / " + DoubleToString(rangeLow, symDigits) + "\n";
-   fullOut += IntegerToString(look) + " nến gần nhất: " + IntegerToString(bull) + " tăng / " + IntegerToString(bear) + " giảm\n";
-   fullOut += "MA đơn giản (5 vs 20): " + DoubleToString(sma5, symDigits) + " / " + DoubleToString(sma20, symDigits) + " → " + bias + "\n";
-   fullOut += "Biên độ nến TB (high−low, " + IntegerToString(atrN) + " nến): " + DoubleToString(atrAvg, symDigits) + "\n";
-
-   int secBar = PeriodSeconds(tf);
-   if(secBar <= 0)
-      secBar = 60;
-   int n24want = (int)MathCeil(86400.0 / (double)secBar);
-   if(n24want < 2)
-      n24want = 2;
-   int n24 = n24want;
-   if(n24 > n - 1)
-      n24 = n - 1;
-   int n7want = (int)MathCeil(604800.0 / (double)secBar);
-   if(n7want < 2)
-      n7want = 2;
-   int n7 = n7want;
-   if(n7 > n - 1)
-      n7 = n - 1;
-   if(n7 < n24)
-      n7 = n24;
-
-   fullOut += "\n--- ĐA KHUNG (ước lượng từ độ dài nến × khung " + tfLab + ") ---\n";
-   fullOut += "Một nến: " + CandleSpanLabelVi(secBar) + "\n";
-   if(n24 < n24want)
-      fullOut += "Lưu ý: ~24h cần khoảng " + IntegerToString(n24want) + " nến nhưng chỉ có " + IntegerToString(n) + " nến — số liệu 24h là tối đa có sẵn.\n";
-   if(n7 < n7want)
-      fullOut += "Lưu ý: ~7 ngày cần khoảng " + IntegerToString(n7want) + " nến — đang dùng " + IntegerToString(n7) + " nến.\n";
-
-   double pct24 = 0.0, pct7 = 0.0;
-   if(n24 >= 1 && n24 < n && rates[n24].close > 0.0)
-      pct24 = (c0 / rates[n24].close - 1.0) * 100.0;
-   if(n7 >= 1 && n7 < n && rates[n7].close > 0.0)
-      pct7 = (c0 / rates[n7].close - 1.0) * 100.0;
-
-   double hi24 = rates[0].high, lo24 = rates[0].low;
-   for(int i = 1; i < n24 && i < n; i++)
-   {
-      if(rates[i].high > hi24)
-         hi24 = rates[i].high;
-      if(rates[i].low < lo24)
-         lo24 = rates[i].low;
-   }
-   double hi7 = rates[0].high, lo7 = rates[0].low;
-   for(int i = 1; i < n7 && i < n; i++)
-   {
-      if(rates[i].high > hi7)
-         hi7 = rates[i].high;
-      if(rates[i].low < lo7)
-         lo7 = rates[i].low;
-   }
-
-   fullOut += "Cửa sổ ~24h: " + IntegerToString(n24) + " nến | % đổi đóng vs đóng cách " + IntegerToString(n24) + " nến: "
-              + (pct24 >= 0.0 ? "+" : "") + DoubleToString(pct24, 2) + "%\n";
-   fullOut += "Đỉnh/đáy trong " + IntegerToString(n24) + " nến gần nhất: " + DoubleToString(hi24, symDigits) + " / " + DoubleToString(lo24, symDigits) + "\n";
-   fullOut += "Cửa sổ ~7 ngày: " + IntegerToString(n7) + " nến | % đổi đóng vs đóng cách " + IntegerToString(n7) + " nến: "
-              + (pct7 >= 0.0 ? "+" : "") + DoubleToString(pct7, 2) + "%\n";
-   fullOut += "Đỉnh/đáy trong " + IntegerToString(n7) + " nến gần nhất: " + DoubleToString(hi7, symDigits) + " / " + DoubleToString(lo7, symDigits) + "\n";
-   fullOut += "Toàn cửa sổ " + IntegerToString(n) + " nến — đỉnh/đáy: " + DoubleToString(rangeHigh, symDigits) + " / " + DoubleToString(rangeLow, symDigits) + "\n";
-   fullOut += "(Chỉ mô tả số liệu nến; AI chỉ được diễn giải từ các mức trên — không bịa giá.)";
-
-   compactOut = tfLab + " " + (chgPct >= 0.0 ? "+" : "") + DoubleToString(chgPct, 1) + "%/" + IntegerToString(n) + "n";
-   if(c0 > sma5 && sma5 > sma20)
-      compactOut += " ↑MA";
-   else if(c0 < sma5 && sma5 < sma20)
-      compactOut += " ↓MA";
-   else
-      compactOut += " ~MA";
-}
-
-
 //+------------------------------------------------------------------+
 //| Cắt chuỗi cho giới hạn Telegram (caption 1024, text 4096).         |
 //+------------------------------------------------------------------+
@@ -4382,96 +4137,6 @@ string TelegramClampLen(const string s, const int maxLen)
    if(StringLen(s) <= maxLen)
       return s;
    return StringSubstr(s, 0, maxLen - 3) + "...";
-}
-
-//+------------------------------------------------------------------+
-//| Một tin Telegram (text); tránh gọi trực tiếp nếu tin rất dài.     |
-//+------------------------------------------------------------------+
-void SendTelegramMessageOnce(const string msg)
-{
-   if(!EnableTelegram || StringLen(TelegramBotToken) < 10 || StringLen(TelegramChatID) < 5)
-      return;
-   string url = "https://api.telegram.org/bot" + TelegramBotToken + "/sendMessage";
-   string body = "chat_id=" + TelegramChatID + "&text=" + UrlEncodeForTelegram(msg) + "&disable_web_page_preview=true";
-   uchar ubody[];
-   int nw = StringToCharArray(body, ubody, 0, WHOLE_ARRAY, CP_UTF8);
-   if(nw <= 0)
-      return;
-   int blen = nw;
-   if(blen > 0 && ubody[blen - 1] == 0)
-      blen--;
-   char post[];
-   ArrayResize(post, blen);
-   for(int b = 0; b < blen; b++)
-      post[b] = (char)ubody[b];
-
-   char result[];
-   string resultHeaders;
-   string headers = "Content-Type: application/x-www-form-urlencoded; charset=UTF-8\r\n";
-   ResetLastError();
-   int res = WebRequest("POST", url, headers, 5000, post, result, resultHeaders);
-   if(res == 200 && TelegramDeletePreviousBotMessagesOnNotify)
-   {
-      string okBody = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-      long mid = TelegramExtractMessageIdFromJson(okBody);
-      if(mid > 0)
-         TelegramNotifyIdsAppend(mid);
-   }
-   if(res != 200)
-   {
-      string resp = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-      Print("Telegram: mã HTTP ", res, " GetLastError=", GetLastError(), " | phản hồi: ", StringSubstr(resp, 0, 700));
-      if(res < 0)
-         Print("Telegram: mã <0 — thường WebRequest chưa được phép: Tools→Options→Expert Advisors → Allow WebRequest → https://api.telegram.org");
-      else
-         Print("Telegram: mã HTTP ", res, " — thường do Bot Token / Chat ID, tin quá dài (4096), hoặc tham số; xem JSON phía trên.");
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Send message to Telegram — tự tách nếu vượt ~3800 ký tự (giới hạn Telegram). |
-//+------------------------------------------------------------------+
-void SendTelegramMessage(const string msg)
-{
-   if(!EnableTelegram || StringLen(TelegramBotToken) < 10 || StringLen(TelegramChatID) < 5)
-      return;
-   const int softMax = 3800;
-   int total = StringLen(msg);
-   if(total <= softMax)
-   {
-      SendTelegramMessageOnce(msg);
-      return;
-   }
-   int start = 0;
-   int partNum = 0;
-   while(start < total)
-   {
-      partNum++;
-      int chunkEnd = start + softMax;
-      if(chunkEnd > total)
-         chunkEnd = total;
-      else
-      {
-         int breakPref = start + (softMax * 3) / 4;
-         int br = -1;
-         for(int p = chunkEnd - 1; p >= breakPref; p--)
-         {
-            if(StringGetCharacter(msg, p) == '\n')
-            {
-               br = p + 1;
-               break;
-            }
-         }
-         if(br > start)
-            chunkEnd = br;
-      }
-      string slice = StringSubstr(msg, start, chunkEnd - start);
-      string head = (partNum > 1) ? ("[Tiếp " + IntegerToString(partNum) + "]\n") : "";
-      SendTelegramMessageOnce(head + slice);
-      start = chunkEnd;
-      if(start < total)
-         Sleep(200);
-   }
 }
 
 //+------------------------------------------------------------------+
@@ -4519,24 +4184,19 @@ void SendResetNotification(const string reason)
    msgPhone += "Số vốn lúc đầu: " + DoubleToString(v0, 2) + " USD\n";
    msgPhone += "Số dư hiện tại: " + DoubleToString(bal, 2) + " USD • Lãi/lỗ: ";
    msgPhone += (pct >= 0 ? "+" : "") + DoubleToString(pct, 1) + "%";
-   string chartFullVi = "";
-   string chartCompactVi = "";
-   if(EnableTelegramChartAnalysis && (EnableTelegram || EnableResetNotification))
-      BuildRealtimeChartAnalysisVI(_Symbol, symDigits, chartFullVi, chartCompactVi);
    while(StringLen(msgPhone) > 255)
       msgPhone = StringSubstr(msgPhone, 0, 252) + "...";
    if(EnableResetNotification)
       SendNotification(msgPhone);
-   if(EnableTelegram && EnableTelegramResetNotification)
+   if(EnableTelegram && EnableTelegramResetNotification && !g_isOnInitBootstrap)
    {
       if(TelegramDeletePreviousBotMessagesOnNotify)
          TelegramDeleteAllPreviousNotifyMessages();
-
-      // Telegram: chỉ gửi đúng 1 tin text giống MT5 push + 1 ảnh chart.
-      SendTelegramMessageOnce(TelegramClampLen(msgPhone, 4096));
-      Sleep(200);
-      string capShot = _Symbol + " • chart";
-      SendTelegramChartScreenshotIfEnabled(TelegramClampLen(capShot, 1024), true);
+      // Telegram: chỉ gửi đúng 1 tin kèm ảnh (sendPhoto + caption), không gửi text rời.
+      string capShot = "VDualGrid • " + _Symbol + "\nLý do: " + rShort + "\nGiá: " + DoubleToString(bid, symDigits)
+                     + "\nSố dư: " + DoubleToString(bal, 2) + " USD | P/L: "
+                     + (pct >= 0 ? "+" : "") + DoubleToString(pct, 1) + "%";
+      SendTelegramChartScreenshotIfEnabled(TelegramClampLen(capShot, 1024));
    }
 }
 
@@ -4549,7 +4209,7 @@ void SendStartupTelegramScreenshot(const string reason)
    string cap = _Symbol + " • khởi động EA";
    if(StringLen(reason) > 0)
       cap += " • " + reason;
-   SendTelegramChartScreenshotIfEnabled(TelegramClampLen(cap, 1024), true);
+   SendTelegramChartScreenshotIfEnabled(TelegramClampLen(cap, 1024));
 }
 
 #endif // VDUALGRID_ENABLE_TELEGRAM
