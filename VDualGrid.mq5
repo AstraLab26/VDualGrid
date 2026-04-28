@@ -48,54 +48,48 @@ enum ENUM_COMPOUND_TRIGGER_PROGRESS_MODE
    COMPOUND_PROGRESS_OPEN_EXCLUDE_POSITIVE_EF = 3           // Chỉ tổng lệnh mở phiên, nhưng không cộng phần lãi dương của chân E/F
 };
 
-//+------------------------------------------------------------------+
-//| Tab Inputs — [1–2] lưới+lệnh → [4] lot theo chân |
-//| → [6b–6c] gồng/cân bằng → [8–9] lịch, MT5.                      |
-//+------------------------------------------------------------------+
+// 6c2: kiểu lọc EMA cho cân bằng lệnh.
+enum ENUM_ORDER_BALANCE_EMA_FILTER_MODE
+{
+   ORDER_BALANCE_EMA_CLOSE_ONLY = 0,    // Chỉ dùng EMA(Close)
+   ORDER_BALANCE_EMA_HIGH_LOW_ONLY = 1  // Chỉ dùng EMA(High/Low)
+};
 
-//——— Giao dịch: lưới, lệnh, lot ———
-input group "━━ 1. Lưới giá (GRID) ━━"
-input double GridDistancePips = 2000.0;         // Bước D giữa các mức (pip) từ bậc 2 trở đi
-input double GridFirstLevelOffsetPips = 1000.0; // Khoảng cách bậc ±1 so với đường gốc (pip)
-input int MaxGridLevels = 50;                  // Số mức chờ ảo mỗi phía (trên và dưới giá gốc)
+input group "━━ 1) GRID ━━"
+input double GridDistancePips = 2000.0;         // Bước lưới D (pip) từ bậc 2+
+input double GridFirstLevelOffsetPips = 1000.0; // Khoảng cách bậc ±1 so với gốc (pip)
+input int MaxGridLevels = 50;                   // Số bậc mỗi phía
 
-input group "━━ 2. Lệnh chung (magic / comment) ━━"
-input int MagicNumber = 123456;                // Magic dùng chung cho chờ ảo và lệnh khớp (nhận diện lệnh EA)
-input string CommentOrder = "VPGrid";           // Ghi chú (comment) gắn lệnh market
+input group "━━ 2) CHUNG (MAGIC/COMMENT) ━━"
+input int MagicNumber = 123456;                 // Magic của EA
+input string CommentOrder = "VPGrid";           // Comment lệnh market
 
-input group "━━ 2c. Bổ sung lệnh (replenish) ━━"
-input bool EnableAutoReplenishVirtualOrders = true; // Bật: khớp/đóng lệnh thì tự dựng lại chờ ảo; Tắt: chỉ dựng một lần khi có gốc
+input group "━━ 2D) LỌC GỐC-EMA CHO CHỜ ẢO ━━"
+input bool   EnableInitBaseEmaVirtGapBlock = true; // Chặn chờ ảo Stop trong vùng Gốc-EMA đã chụp lúc init
+input int    InitBaseEmaVirtGapEMAPeriod = 50;      // Chu kỳ EMA
+input ENUM_TIMEFRAMES InitBaseEmaVirtGapEMATimeframe = PERIOD_M5; // Khung EMA
 
-input group "━━ 2d. Vùng cấm chờ ảo theo Gốc–EMA lúc khởi tạo lưới (phiên) ━━"
-input bool   EnableInitBaseEmaVirtGapBlock = true; // Bật: chỉ chụp vùng Gốc–EMA lần đầu khi vừa đặt gốc; cùng gốc cả phiên thì giữ vùng. Chỉ cấm chờ ảo Stop (không cấm Limit). base>EMA → [EMA..base] cấm Sell Stop dưới gốc; base<EMA → [base..EMA] cấm Buy Stop trên gốc
-input int    InitBaseEmaVirtGapEMAPeriod = 50;      // Chu kỳ EMA (PRICE_CLOSE), ≥1
-input ENUM_TIMEFRAMES InitBaseEmaVirtGapEMATimeframe = PERIOD_M5; // Khung EMA lúc chụp (PERIOD_CURRENT = khung chart)
+input group "━━ 2E) KHỞI ĐỘNG THEO EMA FAST/SLOW ━━"
+input bool   EnableStartupEmaFastSlowCross = true; // Chỉ đặt gốc khi EMA nhanh cắt EMA chậm (khi chưa có gốc)
+input int    StartupEmaFastPeriod = 1;             // Chu kỳ EMA nhanh
+input int    StartupEmaSlowPeriod = 50;            // Chu kỳ EMA chậm
+input ENUM_TIMEFRAMES StartupEmaCrossTimeframe = PERIOD_M5; // Khung EMA fast/slow
 
-// Quy ước nhóm 2e (khi bật EnableStartupEmaFastSlowCross):
-// — EA chỉ coi là “khởi động lưới” sau khi có tín hiệu EMA nhanh cắt EMA chậm; ngay lúc đó đặt đường gốc = Bid (GridBasePriceAtPlacement) rồi khởi tạo lưới.
-// — Khi đã có gốc và EA đang chạy: mọi lần EMA cắt sau đó bị bỏ qua hoàn toàn — không đổi gốc, không phụ thuộc cắt EMA nữa (chỉ nhánh basePrice<=0 mới gọi hàm kiểm tra cắt).
+input group "━━ 2F) KHỞI ĐỘNG THEO RSI ━━"
+input bool   EnableStartupRsiBaseFilter = false;   // Chỉ đặt gốc khi RSI cắt mức (khi chưa có gốc)
+input ENUM_TIMEFRAMES StartupRsiTimeframe = PERIOD_M5; // Khung RSI
+input int    StartupRsiPeriod = 14;                // Chu kỳ RSI
+input double StartupRsiAboveLevel = 70.0;          // Cắt lên mức (đặt <0 để tắt)
+input double StartupRsiBelowLevel = 30.0;          // Cắt xuống mức (đặt <0 để tắt)
 
-input group "━━ 2e. Chờ EMA nhanh cắt EMA chậm mới đặt gốc (chỉ khi chưa có gốc) ━━"
-input bool   EnableStartupEmaFastSlowCross = true; // Bật: chờ cắt EMA (shift 0 vs 1) mới đặt gốc; đã có gốc → EA chạy bình thường, không xét cắt nữa
-input int    StartupEmaFastPeriod = 1;             // Chu kỳ EMA nhanh (PRICE_CLOSE), ≥1; nếu ≥ chậm thì tự đổi thành nhanh < chậm
-input int    StartupEmaSlowPeriod = 50;           // Chu kỳ EMA chậm, ≥1
-input ENUM_TIMEFRAMES StartupEmaCrossTimeframe = PERIOD_M5; // Khung so cắt (PERIOD_CURRENT = khung chart)
+input group "━━ 2G) AUTO LOT BẬC 1 THEO GỐC-EMA ━━"
+input bool   EnableAutoFirstLotByBaseEmaGap = false; // Nếu |Gốc-EMA| <= ngưỡng thì dùng lot bậc 1 auto
+input int    AutoFirstLotByBaseEmaPeriod = 100;      // Chu kỳ EMA
+input ENUM_TIMEFRAMES AutoFirstLotByBaseEmaTimeframe = PERIOD_M5; // Khung EMA
+input double AutoFirstLotByBaseEmaMaxGapPips = 50.0; // Ngưỡng |Gốc-EMA| (pip)
+input double AutoFirstLotByBaseEmaLot = 0.02;        // Lot bậc 1 auto
 
-input group "━━ 2f. Khởi động đặt gốc theo RSI (chỉ khi chưa có gốc) ━━"
-input bool   EnableStartupRsiBaseFilter = false;   // Bật: chỉ cho phép đặt gốc khi RSI có cắt mức theo điều kiện bên dưới (shift2→shift1); đã có gốc thì không ảnh hưởng
-input ENUM_TIMEFRAMES StartupRsiTimeframe = PERIOD_M5; // Khung RSI lúc xét đặt gốc (PERIOD_CURRENT = khung chart)
-input int    StartupRsiPeriod = 14;                // Chu kỳ RSI cho lọc đặt gốc, ≥1
-input double StartupRsiAboveLevel = 70.0;          // Điều kiện 1: RSI cắt lên mức (shift2≤mức và shift1>mức); đặt <0 để tắt điều kiện này
-input double StartupRsiBelowLevel = 30.0;          // Điều kiện 2: RSI cắt xuống mức (shift2≥mức và shift1<mức); đặt <0 để tắt điều kiện này
-
-input group "━━ 2g. Auto lot bậc 1 theo khoảng Gốc–EMA lúc khởi tạo phiên ━━"
-input bool   EnableAutoFirstLotByBaseEmaGap = false; // Bật: lúc khởi tạo lưới, nếu |Gốc-EMA| <= ngưỡng pip thì dùng lot bậc 1 auto cho cả các chân trong phiên; ngược lại dùng lot L1 theo input từng chân
-input int    AutoFirstLotByBaseEmaPeriod = 100;      // Chu kỳ EMA (PRICE_CLOSE), >=1
-input ENUM_TIMEFRAMES AutoFirstLotByBaseEmaTimeframe = PERIOD_M5; // Khung EMA cho auto lot bậc 1 (PERIOD_CURRENT = khung chart)
-input double AutoFirstLotByBaseEmaMaxGapPips = 50.0; // Ngưỡng pip: |Gốc-EMA| <= X thì dùng lot bậc 1 auto
-input double AutoFirstLotByBaseEmaLot = 0.02;        // Lot bậc 1 auto khi thỏa ngưỡng; bậc sau vẫn cộng/nhân theo cấu hình từng chân
-
-input group "━━ 4. Chờ ảo — lot & TP: luôn theo từng chân (4a–4f) ━━"
+input group "━━ 4) CHỜ ẢO A-F (LOT/TP) ━━"
 
 input group "━━ 4a. Buy A trên gốc (+) — lot / TP ━━"
 input bool   EnableLegBuyAboveA = true; // Bật/tắt chân 4a: Buy A trên gốc
@@ -157,56 +151,64 @@ input double VGridMaxLotSellBelowF = 3.0;
 input bool   VGridTpNextSellBelowF = false;
 input double VGridTpPipsSellBelowF = 0.0;
 
-input group "━━ 6b. Gồng lãi tổng — kích hoạt: xóa chờ ảo; chờ +1 bước lưới; SL chung tại ref; đóng SELL/BUY theo giá vs gốc; SL trượt ━━"
-input bool   EnableCompoundTotalFloatingProfit = true; // ARM/chờ bước: hết ngưỡng VÀ (Bid<tham chiếu nếu rổ trên gốc | Ask>tham chiếu nếu rổ dưới gốc) → hủy, coi như chưa gồng; chờ bước thì ManageGridOrders. Còn lại: >1 pip+ngưỡng→kích hoạt xóa chờ; +1 bước→SL@ref→đóng SELL/BUY theo Bid vs gốc; SL trượt. Max loss vẫn xét nếu bật
-input ENUM_COMPOUND_TRIGGER_PROGRESS_MODE CompoundTriggerProgressMode = COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_TOTAL; // Chọn kiểu tính tiến độ ngưỡng 6b: Σ mở phiên, Σ mở+đóng âm+TP, Σ mở+đóng toàn phiên, hoặc Σ mở nhưng loại lãi dương của chân E/F
-input double CompoundTotalProfitTriggerUSD = 20.0; // Ngưỡng (USD) cho tiến độ 6b (theo mode trên), không commission; ≤0=tắt. Cộng thêm phần điều chỉnh từ nhóm 6c (nếu bật)
-input bool   CompoundResetOnCommonSlHit = true; // Bật: giá quay đầu chạm mức SL chung → đóng hết, xóa lưới, chờ lịch/khung giờ hoặc đặt gốc ngay nếu trong lịch chạy
+input group "━━ 6B) GỒNG LÃI TỔNG ━━"
+input bool   EnableCompoundTotalFloatingProfit = true; // Bật gồng lãi tổng 6b
+input ENUM_COMPOUND_TRIGGER_PROGRESS_MODE CompoundTriggerProgressMode = COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_TOTAL; // Kiểu tính tiến độ ngưỡng
+input double CompoundTotalProfitTriggerUSD = 20.0; // Ngưỡng kích hoạt (USD)
+input bool   CompoundResetOnCommonSlHit = true; // Chạm SL chung thì reset
 
-input group "━━ 6c. Cân bằng lệnh — đóng một phía + nâng ngưỡng gồng 6b ━━"
-input bool   EnableOrderBalanceMode = true;        // Bật: khi giá xa gốc đủ bậc + đủ phút cùng phía gốc + lệch số lệnh hai phía → đóng hết lệnh phía yếu; P/L đóng (profit+swap) cộng vào ngưỡng Σ mở của 6b
-input int    OrderBalanceMinGridStepsFromBase = 5; // Tối thiểu: Bid cách đường gốc theo số bậc lưới (trên hoặc dưới), ≥1
-input int    OrderBalanceMinMinutesOnSideOfBase = 30; // Tối thiểu phút: Bid liên tục cùng phía đường gốc (chưa cắt qua vùng cấm quanh gốc), ≥1
-input int    OrderBalanceMinOrderCountGap = 1;     // Tối thiểu độ lệch số lệnh giữa 2 phía để cho phép đóng phía yếu (0 = bỏ qua điều kiện lệch; ví dụ 2 => phía mạnh phải nhiều hơn ít nhất 2 lệnh)
-input int    OrderBalanceCooldownSeconds = 60;     // Sau mỗi lần cân bằng: chờ N giây mới xét lại (0 = không chờ)
-input bool   EnableOrderBalanceEMAFilter = true;  // Bật: N nến ĐÃ ĐÓNG gần nhất, liên tiếp theo thời gian (shift 1 = nến đóng mới nhất, 2,3… kế trước, không nhảy nến). Cả N đều close>EMA → chỉ nhánh đóng dưới gốc (+ Bid 6c); cả N close<EMA → chỉ đóng trên; lẫn hoặc có nến chạm EMA → không đóng
-input int    OrderBalanceEMAPeriod = 50;        // Chu kỳ EMA (PRICE_CLOSE) cho lọc 6c, ≥1 (ví dụ: 100)
-input ENUM_TIMEFRAMES OrderBalanceEMATimeframe = PERIOD_M5; // Khung nến so close vs EMA (PERIOD_CURRENT = khung chart)
-input int    OrderBalanceEMAConfirmBars = 10;    // N = số nến đóng gần nhất, liên tiếp. Mỗi nến: close vs EMA cùng thời điểm; clamp 1..50
-input bool   EnableOrderBalanceFastSlowFilter = false; // Bật: EMA nhanh/chậm giới hạn hướng đóng 6c. EMA nhanh>EMA chậm → chỉ đóng Sell dưới gốc; EMA nhanh<EMA chậm → chỉ đóng Buy trên gốc; bằng nhau → không đóng
-input int    OrderBalanceFastEMAPeriod = 9;      // Chu kỳ EMA nhanh cho lọc nhanh/chậm 6c, ≥1; nếu >= chậm sẽ tự giảm về chậm-1
-input int    OrderBalanceSlowEMAPeriod = 21;     // Chu kỳ EMA chậm cho lọc nhanh/chậm 6c, ≥2
-input ENUM_TIMEFRAMES OrderBalanceFastSlowTimeframe = PERIOD_M5; // Khung EMA nhanh/chậm 6c (PERIOD_CURRENT = khung chart)
-input bool   EnableOrderBalanceRSIFilter = false; // Bật/tắt lọc RSI cho cân bằng 6c
-input ENUM_TIMEFRAMES OrderBalanceRSITimeframe = PERIOD_M5; // Khung RSI (PERIOD_CURRENT = khung chart)
-input int    OrderBalanceRSIPeriod = 14;         // Chu kỳ RSI cho lọc 6c, ≥1
-input double OrderBalanceRSIGreaterLevel = 70.0; // RSI cắt lên mức X (shift2<=X và shift1>X); đặt <0 để tắt điều kiện này
-input double OrderBalanceRSILessLevel = 30.0;    // RSI cắt xuống mức X (shift2>=X và shift1<X); đặt <0 để tắt điều kiện này
-input bool   EnableOrderBalanceCloseBothSidesPaired = false; // Bật: khi đủ điều kiện 6c thì đóng cả 2 phía theo cặp số lượng (min phía yếu, phía mạnh); carry chỉ tính lỗ phía yếu
-input bool   EnableOrderBalanceCarryCapPerSession = false; // Bật: giới hạn phần âm 6c được cộng vào ngưỡng gồng 6b theo trần mỗi phiên; phần dư giữ cho phiên sau
-input double OrderBalanceCarryCapPerSessionUSD = 2000.0;   // Trần cộng tối đa mỗi phiên (USD) từ carry 6c; <=0 xem như tắt trần
+input group "━━ 6C) CÂN BẰNG LỆNH ━━"
+input bool   EnableOrderBalanceMode = true;        // Bật cân bằng lệnh 6c
+input group "━━ 6C1) ĐIỀU KIỆN CƠ BẢN ━━"
+input int    OrderBalanceMinGridStepsFromBase = 5; // Giá cách gốc tối thiểu (số bậc)
+input int    OrderBalanceMinMinutesOnSideOfBase = 30; // Thời gian cùng phía gốc tối thiểu (phút)
+input int    OrderBalanceMinOrderCountGap = 1;     // Lệch số lệnh tối thiểu hai phía
+input int    OrderBalanceCooldownSeconds = 60;     // Thời gian chờ giữa 2 lần cân bằng (giây)
+input group "━━ 6C2) LỌC EMA HIGH/LOW/CLOSE ━━"
+input bool   EnableOrderBalanceEMAFilter = true;  // Bật lọc EMA cho hướng đóng
+input ENUM_ORDER_BALANCE_EMA_FILTER_MODE OrderBalanceEMAFilterMode = ORDER_BALANCE_EMA_HIGH_LOW_ONLY; // Chọn kiểu lọc: EMA Close hoặc EMA High/Low
+input int    OrderBalanceEMAPeriod = 50;           // Chu kỳ EMA
+input ENUM_TIMEFRAMES OrderBalanceEMATimeframe = PERIOD_M5; // Khung EMA
+input int    OrderBalanceEMAHighConfirmBars = 10;  // X1: nến close>EMA(High) cho nhánh đóng dưới gốc
+input int    OrderBalanceEMALowConfirmBars = 10;   // X2: nến close<EMA(Low) cho nhánh đóng trên gốc
+input int    OrderBalanceEMACloseConfirmBars = 10; // X3: số nến xác nhận EMA(Close)
+input group "━━ 6C3) LỌC EMA FAST/SLOW (TÙY CHỌN) ━━"
+input bool   EnableOrderBalanceFastSlowFilter = false; // Bật lọc EMA nhanh/chậm
+input int    OrderBalanceFastEMAPeriod = 9;       // Chu kỳ EMA nhanh
+input int    OrderBalanceSlowEMAPeriod = 21;      // Chu kỳ EMA chậm
+input ENUM_TIMEFRAMES OrderBalanceFastSlowTimeframe = PERIOD_M5; // Khung EMA nhanh/chậm
+input group "━━ 6C4) LỌC RSI (TÙY CHỌN) ━━"
+input bool   EnableOrderBalanceRSIFilter = false; // Bật lọc RSI
+input ENUM_TIMEFRAMES OrderBalanceRSITimeframe = PERIOD_M5; // Khung RSI
+input int    OrderBalanceRSIPeriod = 14;          // Chu kỳ RSI
+input double OrderBalanceRSIGreaterLevel = 70.0;  // RSI > mức thì cho nhánh đóng dưới gốc (đặt <0 để tắt)
+input double OrderBalanceRSILessLevel = 30.0;     // RSI < mức thì cho nhánh đóng trên gốc (đặt <0 để tắt)
+input group "━━ 6C5) CÁCH ĐÓNG LỆNH ━━"
+input bool   EnableOrderBalanceCloseBothSidesPaired = false; // Đóng cặp cả 2 phía khi đủ điều kiện
+input group "━━ 6C6) GIỚI HẠN CARRY 6C -> 6B ━━"
+input bool   EnableOrderBalanceCarryCapPerSession = false; // Bật trần carry mỗi phiên
+input double OrderBalanceCarryCapPerSessionUSD = 2000.0;   // Trần carry mỗi phiên (USD)
 
-input group "━━ 6d. Reset theo khoảng cách giá + tổng P/L phiên ━━"
-input bool   EnableSessionDistanceAndTotalProfitReset = false; // Bật: trong phiên hiện tại, nếu khoảng cách xa nhất từng đạt so với gốc >= X pip và P/L lệnh ĐANG MỞ hiện tại >= X USD thì reset EA
-input double SessionDistanceResetPips = 500.0; // X pip tối thiểu: khoảng cách xa nhất giá đã từng đạt so với gốc trong phiên hiện tại
-input double SessionTotalProfitResetUSD = 100.0; // X USD tối thiểu: P/L lệnh đang mở hiện tại (profit+swap)
-input bool   EnableSessionResetRequireOrderBalanceNegative = false; // Bật: 6d chỉ kích hoạt khi 6c đã đóng lệnh âm tích lũy trong phiên đạt ngưỡng lỗ tối thiểu bên dưới
-input double SessionOrderBalanceNegativeTriggerUSD = 1000.0; // Lỗ tối thiểu X USD (nhập âm hoặc dương đều được, hệ thống lấy |X|): đạt khi |tổng âm tích lũy do 6c đã đóng| >= |X|
-input bool   EnableResetWhenReachPrevSessionPeak = false; // Bật: lấy đỉnh lãi đã đóng của phiên trước (đỉnh vốn đóng - vốn đóng đầu phiên trước, ví dụ 600) làm mốc; phiên hiện tại khi lãi TEV kể từ đầu phiên >= mốc này thì reset EA
-input bool   EnableSessionOpenPlusClosedProfitReset = false; // Bật: khi (tổng lệnh đang mở + tổng lệnh đã đóng trong phiên) >= X USD thì reset EA
-input double SessionOpenPlusClosedProfitResetUSD = 1000.0; // X USD ngưỡng reset cho chế độ trên, theo tổng P/L phiên = mở + đã đóng (profit+swap)
+input group "━━ 6D) RESET THEO ĐIỀU KIỆN PHIÊN ━━"
+input bool   EnableSessionDistanceAndTotalProfitReset = false; // Reset khi đạt xa gốc + lãi mở
+input double SessionDistanceResetPips = 500.0; // Xa gốc tối thiểu (pip)
+input double SessionTotalProfitResetUSD = 100.0; // Lãi mở tối thiểu (USD)
+input bool   EnableSessionResetRequireOrderBalanceNegative = false; // Yêu cầu đã có âm tích lũy 6c
+input double SessionOrderBalanceNegativeTriggerUSD = 1000.0; // Ngưỡng âm tích lũy 6c (USD)
+input bool   EnableResetWhenReachPrevSessionPeak = false; // Reset khi đạt mốc đỉnh lãi phiên trước
+input bool   EnableSessionOpenPlusClosedProfitReset = false; // Reset khi (mở+đóng) đạt ngưỡng
+input double SessionOpenPlusClosedProfitResetUSD = 1000.0; // Ngưỡng (mở+đóng) (USD)
 
-//——— Vận hành & thông báo ———
-input group "━━ 8. Lịch chạy — khung giờ (server MT5) ━━"
-input bool   EnableRunTimeWindow = false;      // Bật: chỉ trong khung giờ mới được đặt gốc/chạy lưới; ngoài giờ EA chờ
-input int    RunStartHour = 1;                 // Giờ bắt đầu khung (0..23), giờ server MT5
-input int    RunStartMinute = 0;               // Phút bắt đầu (0..59)
-input int    RunEndHour = 16;                  // Giờ kết thúc khung (0..23)
-input int    RunEndMinute = 0;                 // Phút kết thúc (0..59)
-input int    StartupRestartDelayMinutes = 0;   // Delay khởi động lại EA (phút): lúc EA vừa chạy hoặc sau reset, chờ hết thời gian này mới cho đặt gốc/lưới mới
+input group "━━ 8A) LỊCH CHẠY THEO GIỜ ━━"
+input bool   EnableRunTimeWindow = false;      // Chỉ chạy trong khung giờ
+input int    RunStartHour = 1;                 // Giờ bắt đầu
+input int    RunStartMinute = 0;               // Phút bắt đầu
+input int    RunEndHour = 16;                  // Giờ kết thúc
+input int    RunEndMinute = 0;                 // Phút kết thúc
+input int    StartupRestartDelayMinutes = 0;   // Delay trước khi cho đặt gốc mới (phút)
 
-input group "━━ 8b. Ngày chạy trong tuần (server MT5) ━━"
-input bool EnableRunDayFilter = false;         // Bật: chỉ được mở/reset phiên mới vào các ngày bật bên dưới
+input group "━━ 8B) LỊCH CHẠY THEO NGÀY ━━"
+input bool EnableRunDayFilter = false;         // Bật lọc ngày chạy
 input bool RunOnMonday    = true;              // Thứ 2
 input bool RunOnTuesday   = true;              // Thứ 3
 input bool RunOnWednesday = true;              // Thứ 4
@@ -215,12 +217,15 @@ input bool RunOnFriday    = true;              // Thứ 6
 input bool RunOnSaturday  = true;              // Thứ 7
 input bool RunOnSunday    = true;              // Chủ nhật
 
-input group "━━ 9. Thông báo — MT5 (push) ━━"
-input bool EnableResetNotification = true;     // Bật/tắt: gửi thông báo đến MT5
-input bool EnableTelegram = true;              // Bật/tắt: gửi thông báo đến Telegram
-input bool TelegramDeletePreviousBotMessagesOnNotify = false; // Bật/tắt: xóa toàn bộ tin cũ của bot trước khi gửi tin mới
-input string TelegramBotToken = "";            // Ô Token bot Telegram (dạng 123456:ABC...)
-input string TelegramChatID = "";              // Ô ID nhóm/kênh Telegram (ví dụ -100xxxxxxxxxx)
+input group "━━ 8C) TRÁNH TIN USD HIGH IMPACT ━━"
+input bool EnableAvoidUsdHighImpactNews = false; // Hôm nay hoặc ngày mai có tin USD mức cao thì chặn phiên mới
+
+input group "━━ 9) THÔNG BÁO ━━"
+input bool EnableResetNotification = true;     // Gửi thông báo MT5
+input bool EnableTelegram = true;              // Gửi Telegram
+input bool TelegramDeletePreviousBotMessagesOnNotify = false; // Xóa tin bot cũ trước khi gửi tin mới
+input string TelegramBotToken = "";            // Telegram bot token
+input string TelegramChatID = "";              // Telegram chat id
 
 // Cấu hình Telegram nâng cao giữ nguyên mặc định, không cho chỉnh bằng input.
 bool EnableTelegramResetNotification = true;
@@ -228,9 +233,9 @@ bool EnableTelegramStartupScreenshot = true;
 int  TelegramScreenshotWidth = 1280;
 int  TelegramScreenshotHeight = 720;
 
-input group "━━ 10. Panel — bảng lợi nhuận tháng trên biểu đồ ━━"
-input bool   EnableMonthlyProfitPanel = false;       // Bật/tắt panel (kích thước cố định theo code)
-input bool   EnableBaseLineAndEaStartMarker = true;  // Bật: hiện cả đường gốc + cột dọc/nhãn thời gian đặt gốc; Tắt: ẩn cả 2
+input group "━━ 10) PANEL BIỂU ĐỒ ━━"
+input bool   EnableMonthlyProfitPanel = false;       // Hiện panel lợi nhuận tháng
+input bool   EnableBaseLineAndEaStartMarker = true;  // Hiện đường gốc + mốc thời gian bắt đầu EA
 
 //--- Global variables
 CTrade trade;
@@ -262,7 +267,6 @@ int MagicAA = 0;                              // Strategy magic (= MagicNumber i
 bool g_runtimeSessionActive = true;           // true: trong lịch chạy (giờ/ngày); false: chờ tới khi lịch cho phép phiên mới
 datetime g_startupDelayUntil = 0;             // Mốc thời gian kết thúc delay khởi động lại EA
 bool g_startupDelayLogged = false;            // Tránh log lặp lại mỗi tick khi đang delay
-bool g_gridBuiltOnceThisSession = false;      // Khi tắt auto replenish: chỉ dựng chờ ảo 1 lần mỗi phiên (sau khi đặt base)
 bool g_compoundTotalProfitActive = false;     // Chế độ gồng lãi tổng (nhóm 6b): SL chung, không nạp chờ ảo, SL trượt
 bool g_compoundBuyBasketMode = false;         // true = giá Bid≥gốc: giữ BUY, SL chung buy; false = dưới gốc: giữ SELL
 double g_compoundCommonSlLine = 0.0;          // Giá SL chung (0 = chưa đặt bước đầu); Buy: SL dưới giá; Sell: SL trên giá
@@ -280,7 +284,9 @@ double g_orderBalanceSessionClosedNegativeUsd = 0.0;       // 6d: tổng âm tí
 datetime g_orderBalAboveSideSince = 0;        // 6c: Bid liên tục phía trên gốc (chưa xuống vùng cấm)
 datetime g_orderBalBelowSideSince = 0;        // 6c: Bid liên tục phía dưới gốc
 datetime g_orderBalLastExecTime = 0;          // 6c: cooldown sau lần đóng cân bằng
-int    g_orderBalanceEmaHandle = INVALID_HANDLE; // iMA EMA khi bật lọc EMA cân bằng (6c)
+int    g_orderBalanceEmaHighHandle = INVALID_HANDLE; // iMA EMA(PRICE_HIGH) cho lọc EMA cân bằng (6c)
+int    g_orderBalanceEmaLowHandle = INVALID_HANDLE;  // iMA EMA(PRICE_LOW) cho lọc EMA cân bằng (6c)
+int    g_orderBalanceEmaCloseHandle = INVALID_HANDLE; // iMA EMA(PRICE_CLOSE) cho điều kiện nến đóng trên/dưới đường EMA trung bình (6c)
 int    g_orderBalanceRsiHandle = INVALID_HANDLE; // iRSI khi bật lọc RSI cân bằng (6c)
 int    g_orderBalanceFastEmaHandle = INVALID_HANDLE; // iMA EMA nhanh cho lọc nhanh/chậm cân bằng (6c)
 int    g_orderBalanceSlowEmaHandle = INVALID_HANDLE; // iMA EMA chậm cho lọc nhanh/chậm cân bằng (6c)
@@ -309,6 +315,10 @@ bool     g_mpAutoFollowCurrentMonth = true;    // true: tự nhảy sang tháng 
 datetime g_mpLastSeenServerMonthStart = 0;     // theo dõi mốc tháng server để reset panel khi sang tháng
 bool     g_isOnInitBootstrap = false;          // true trong lúc OnInit để tránh gửi Telegram reset trùng với tin ảnh lúc vừa gắn EA
 long     g_telegramNotifyMsgIds[];             // lưu message_id Telegram bot để tùy chọn xóa tin cũ
+long     g_newsAvoidCachedDateKey = 0;         // cache theo ngày server cho tránh tin USD level 3
+bool     g_newsAvoidHasUsdHighImpactToday = false;
+long     g_newsAvoidLoggedBlockedDateKey = 0;  // tránh log lặp khi bị chặn bởi tin
+long     g_newsAvoidLoggedCalendarErrDateKey = 0; // tránh log lỗi lịch lặp theo ngày
 
 //--- Sau khi chờ ảo khớp market: chặn bổ sung lại chờ ảo cùng phía/mức cho tới khi vị thế hiện hoặc hết hạn
 #define VPGRID_VIRTUAL_EXEC_COOLDOWN_SEC 5
@@ -348,7 +358,7 @@ void UpdateBaseLineOnChart();
 void EaStartTimeObjectsApplyOrRemove();
 bool OrderBalanceLastClosedVsEma(int &biasOut);
 bool OrderBalanceFastSlowBias(int &biasOut);
-bool OrderBalanceRsiPass(double &rsiOut);
+bool OrderBalanceRsiPass(int &biasOut, double &rsiOut);
 bool ProcessOrderBalanceMode();
 bool IsVirtualGridLegEnabled(const ENUM_VGRID_LEG leg);
 void InitBaseEmaVirtGapClearZone();
@@ -359,6 +369,9 @@ void StartupEmaCrossReleaseHandles();
 void StartupEmaCrossInitHandles();
 bool StartupEmaFastSlowCrossShift0vs1();
 bool StartupRsiPassForBase(double &rsiOut);
+datetime ServerDayStart(const datetime t);
+long ServerDateKey(const datetime t);
+bool HasUsdHighImpactNewsPauseWindow(const datetime nowSrv);
 void MonthlyProfitPanelDeleteAll();
 void MonthlyProfitPanelRedrawIfNeeded(const bool force);
 void MonthlyProfitPanelOnInitState();
@@ -1545,31 +1558,78 @@ double GridPriceTolerance()
 }
 
 //+------------------------------------------------------------------+
-//| 6c: N nến ĐÃ ĐÓNG gần nhất, liên tiếp (Copy* từ shift 1, count=N).   |
-//| Mỗi nến: close vs EMA cùng shift. bias +1 / −1 / 0 như trước.        |
+//| 6c: X nến ĐÃ ĐÓNG gần nhất, liên tiếp (shift 1..X), theo mode EMA đã chọn. |
+//| CLOSE: bias +1 khi đủ X3 nến close>EMA(Close), bias -1 khi đủ X3 nến close<EMA(Close). |
+//| HIGH/LOW: bias +1 khi đủ X1 nến close>EMA(High), bias -1 khi đủ X2 nến close<EMA(Low). |
 //+------------------------------------------------------------------+
 bool OrderBalanceLastClosedVsEma(int &biasOut)
 {
    biasOut = 0;
-   if(!EnableOrderBalanceEMAFilter || g_orderBalanceEmaHandle == INVALID_HANDLE)
+   if(!EnableOrderBalanceEMAFilter)
       return false;
+   const bool useCloseOnly = (OrderBalanceEMAFilterMode == ORDER_BALANCE_EMA_CLOSE_ONLY);
+   if(useCloseOnly)
+   {
+      if(g_orderBalanceEmaCloseHandle == INVALID_HANDLE)
+         return false;
+   }
+   else
+   {
+      if(g_orderBalanceEmaHighHandle == INVALID_HANDLE || g_orderBalanceEmaLowHandle == INVALID_HANDLE)
+         return false;
+   }
    ENUM_TIMEFRAMES tf = OrderBalanceEMATimeframe;
    if(tf == PERIOD_CURRENT)
       tf = (ENUM_TIMEFRAMES)_Period;
-   int nBar = OrderBalanceEMAConfirmBars;
-   if(nBar < 1)
-      nBar = 1;
-   if(nBar > 50)
-      nBar = 50;
+   int nHigh = OrderBalanceEMAHighConfirmBars;
+   if(nHigh < 1)
+      nHigh = 1;
+   if(nHigh > 50)
+      nHigh = 50;
+   int nLow = OrderBalanceEMALowConfirmBars;
+   if(nLow < 1)
+      nLow = 1;
+   if(nLow > 50)
+      nLow = 50;
+   int nClose = OrderBalanceEMACloseConfirmBars;
+   if(nClose < 1)
+      nClose = 1;
+   if(nClose > 50)
+      nClose = 50;
+   int nBar = (useCloseOnly ? nClose : MathMax(nHigh, nLow));
    const int emaP = MathMax(1, OrderBalanceEMAPeriod);
-   if(BarsCalculated(g_orderBalanceEmaHandle) < emaP + nBar + 2)
-      return false;
+   if(useCloseOnly)
+   {
+      if(BarsCalculated(g_orderBalanceEmaCloseHandle) < emaP + nBar + 2)
+         return false;
+   }
+   else
+   {
+      if(BarsCalculated(g_orderBalanceEmaHighHandle) < emaP + nBar + 2)
+         return false;
+      if(BarsCalculated(g_orderBalanceEmaLowHandle) < emaP + nBar + 2)
+         return false;
+   }
 
    // shift 1 = nến đóng mới nhất; shift 2..N = các nến đóng liền trước đó (không bỏ sót).
-   double emaVal[];
-   ArrayResize(emaVal, nBar);
-   if(CopyBuffer(g_orderBalanceEmaHandle, 0, 1, nBar, emaVal) != nBar)
-      return false;
+   double emaHighVal[];
+   double emaLowVal[];
+   double emaCloseVal[];
+   ArrayResize(emaCloseVal, nBar);
+   if(useCloseOnly)
+   {
+      if(CopyBuffer(g_orderBalanceEmaCloseHandle, 0, 1, nBar, emaCloseVal) != nBar)
+         return false;
+   }
+   else
+   {
+      ArrayResize(emaHighVal, nBar);
+      ArrayResize(emaLowVal, nBar);
+      if(CopyBuffer(g_orderBalanceEmaHighHandle, 0, 1, nBar, emaHighVal) != nBar)
+         return false;
+      if(CopyBuffer(g_orderBalanceEmaLowHandle, 0, 1, nBar, emaLowVal) != nBar)
+         return false;
+   }
 
    MqlRates rr[];
    ArrayResize(rr, nBar);
@@ -1577,14 +1637,30 @@ bool OrderBalanceLastClosedVsEma(int &biasOut)
       return false;
 
    bool allAbove = true;
-   bool allBelow = true;
-   for(int i = 0; i < nBar; i++)
+   int upCount = (useCloseOnly ? nClose : nHigh);
+   for(int i = 0; i < upCount; i++)
    {
       const double cls = rr[i].close;
-      const double ema = emaVal[i];
-      if(cls <= ema)
+      bool fail = false;
+      if(useCloseOnly)
+         fail = (cls <= emaCloseVal[i]);
+      else
+         fail = (cls <= emaHighVal[i]);
+      if(fail)
          allAbove = false;
-      if(cls >= ema)
+   }
+
+   bool allBelow = true;
+   int downCount = (useCloseOnly ? nClose : nLow);
+   for(int j = 0; j < downCount; j++)
+   {
+      const double cls = rr[j].close;
+      bool fail = false;
+      if(useCloseOnly)
+         fail = (cls >= emaCloseVal[j]);
+      else
+         fail = (cls >= emaLowVal[j]);
+      if(fail)
          allBelow = false;
    }
    if(allAbove)
@@ -1641,10 +1717,12 @@ bool OrderBalanceFastSlowBias(int &biasOut)
 }
 
 //+------------------------------------------------------------------+
-//| 6c: RSI phải cắt mức ở nến đóng gần nhất (shift2 -> shift1).       |
+//| 6c: RSI theo ngưỡng mức tại nến đóng gần nhất (shift1).            |
+//| bias +1: RSI > mức trên (đóng dưới gốc), -1: RSI < mức dưới (đóng trên). |
 //+------------------------------------------------------------------+
-bool OrderBalanceRsiPass(double &rsiOut)
+bool OrderBalanceRsiPass(int &biasOut, double &rsiOut)
 {
+   biasOut = 0;
    rsiOut = 0.0;
    if(!EnableOrderBalanceRSIFilter)
       return false;
@@ -1654,16 +1732,15 @@ bool OrderBalanceRsiPass(double &rsiOut)
       return false;
 
    const int rsiP = MathMax(1, OrderBalanceRSIPeriod);
-   if(BarsCalculated(g_orderBalanceRsiHandle) < rsiP + 2)
+   if(BarsCalculated(g_orderBalanceRsiHandle) < rsiP + 1)
       return false;
 
    double rsiVal[];
-   ArrayResize(rsiVal, 2);
-   if(CopyBuffer(g_orderBalanceRsiHandle, 0, 1, 2, rsiVal) != 2)
+   ArrayResize(rsiVal, 1);
+   if(CopyBuffer(g_orderBalanceRsiHandle, 0, 1, 1, rsiVal) != 1)
       return false;
 
    const double rsiCur = rsiVal[0];   // shift 1
-   const double rsiPrev = rsiVal[1];  // shift 2
    rsiOut = rsiCur;
    double gtLevel = OrderBalanceRSIGreaterLevel;
    if(gtLevel < 0.0) gtLevel = -1.0;
@@ -1676,10 +1753,17 @@ bool OrderBalanceRsiPass(double &rsiOut)
    bool passGreater = false;
    bool passLess = false;
    if(useGreater && gtLevel >= 0.0)
-      passGreater = (rsiPrev <= gtLevel && rsiCur > gtLevel);
+      passGreater = (rsiCur > gtLevel);
    if(useLess && ltLevel >= 0.0)
-      passLess = (rsiPrev >= ltLevel && rsiCur < ltLevel);
-   return (passGreater || passLess);
+      passLess = (rsiCur < ltLevel);
+
+   if(passGreater && !passLess)
+      biasOut = 1;
+   else if(passLess && !passGreater)
+      biasOut = -1;
+   else
+      biasOut = 0;
+   return (biasOut != 0);
 }
 
 //+------------------------------------------------------------------+
@@ -1990,11 +2074,16 @@ bool ProcessOrderBalanceMode()
    }
 
    double rsiValue = 0.0;
+   int rsiBias = 0;
    const bool useRsiFilter = (EnableOrderBalanceRSIFilter && (OrderBalanceRSIGreaterLevel >= 0.0 || OrderBalanceRSILessLevel >= 0.0));
    if(useRsiFilter)
    {
-      if(!OrderBalanceRsiPass(rsiValue))
+      if(!OrderBalanceRsiPass(rsiBias, rsiValue))
          return false;
+      if(rsiBias > 0)
+         allowCloseAboveByEma = false; // RSI > mức trên: chỉ cho nhánh đóng dưới gốc.
+      else if(rsiBias < 0)
+         allowCloseBelowByEma = false; // RSI < mức dưới: chỉ cho nhánh đóng trên gốc.
    }
 
    bool wantCloseBelow = false;
@@ -2191,10 +2280,20 @@ bool ProcessOrderBalanceMode()
    string emaLog = "";
    if(EnableOrderBalanceEMAFilter)
    {
-      int nLog = OrderBalanceEMAConfirmBars;
-      if(nLog < 1) nLog = 1;
-      if(nLog > 50) nLog = 50;
-      emaLog = " | EMA " + IntegerToString(nLog) + " nến đóng gần nhất (liên tiếp): " + (emaBias > 0 ? "cả N close>EMA" : (emaBias < 0 ? "cả N close<EMA" : "không đồng nhất"));
+      int nHighLog = OrderBalanceEMAHighConfirmBars;
+      if(nHighLog < 1) nHighLog = 1;
+      if(nHighLog > 50) nHighLog = 50;
+      int nLowLog = OrderBalanceEMALowConfirmBars;
+      if(nLowLog < 1) nLowLog = 1;
+      if(nLowLog > 50) nLowLog = 50;
+      int nCloseLog = OrderBalanceEMACloseConfirmBars;
+      if(nCloseLog < 1) nCloseLog = 1;
+      if(nCloseLog > 50) nCloseLog = 50;
+      string modeText = (OrderBalanceEMAFilterMode == ORDER_BALANCE_EMA_CLOSE_ONLY
+                         ? "EMA Close (X3=" + IntegerToString(nCloseLog) + ")"
+                         : "EMA High/Low (X1=" + IntegerToString(nHighLog) + ", X2=" + IntegerToString(nLowLog) + ")");
+      emaLog = " | " + modeText + ": "
+            + (emaBias > 0 ? "đủ điều kiện nhánh đóng dưới gốc" : (emaBias < 0 ? "đủ điều kiện nhánh đóng trên gốc" : "chưa đủ điều kiện"));
    }
    string fastSlowLog = "";
    if(EnableOrderBalanceFastSlowFilter)
@@ -2204,10 +2303,11 @@ bool ProcessOrderBalanceMode()
    {
       string cond = "";
       if(OrderBalanceRSIGreaterLevel >= 0.0)
-         cond = " cắt lên " + DoubleToString(OrderBalanceRSIGreaterLevel, 2);
+         cond = " > " + DoubleToString(OrderBalanceRSIGreaterLevel, 2) + " (đóng dưới gốc)";
       if(OrderBalanceRSILessLevel >= 0.0)
-         cond = (StringLen(cond) > 0 ? cond + " OR cắt xuống " : " cắt xuống ") + DoubleToString(OrderBalanceRSILessLevel, 2);
-      rsiLog = " | RSI(shift1)=" + DoubleToString(rsiValue, 2) + " | điều kiện" + cond;
+         cond = (StringLen(cond) > 0 ? cond + " OR < " : " < ") + DoubleToString(OrderBalanceRSILessLevel, 2) + " (đóng trên gốc)";
+      string biasText = (rsiBias > 0 ? "bias dưới gốc" : (rsiBias < 0 ? "bias trên gốc" : "không bias"));
+      rsiLog = " | RSI(shift1)=" + DoubleToString(rsiValue, 2) + " | điều kiện" + cond + " | " + biasText;
    }
    const double totalClosedPnL = weakClosedPnL + strongClosedPnL;
    string pairedLog = "";
@@ -2611,7 +2711,76 @@ bool IsSchedulingAllowedForNewSession(const datetime nowSrv)
       return false;
    if(!IsRunDayAllowedNow(nowSrv))
       return false;
+   if(EnableAvoidUsdHighImpactNews && HasUsdHighImpactNewsPauseWindow(nowSrv))
+      return false;
    return true;
+}
+
+datetime ServerDayStart(const datetime t)
+{
+   MqlDateTime dt;
+   TimeToStruct(t, dt);
+   dt.hour = 0;
+   dt.min = 0;
+   dt.sec = 0;
+   return StructToTime(dt);
+}
+
+long ServerDateKey(const datetime t)
+{
+   MqlDateTime dt;
+   TimeToStruct(t, dt);
+   return (long)dt.year * 10000L + (long)dt.mon * 100L + (long)dt.day;
+}
+
+bool HasUsdHighImpactNewsPauseWindow(const datetime nowSrv)
+{
+   if(!EnableAvoidUsdHighImpactNews)
+      return false;
+
+   const long dateKey = ServerDateKey(nowSrv);
+   if(g_newsAvoidCachedDateKey == dateKey)
+      return g_newsAvoidHasUsdHighImpactToday;
+
+   g_newsAvoidCachedDateKey = dateKey;
+   g_newsAvoidHasUsdHighImpactToday = false;
+
+   const datetime dayStart = ServerDayStart(nowSrv);
+   // Chặn phiên mới trong "ngày trước tin + ngày có tin":
+   // nếu hôm nay hoặc ngày mai có USD high impact thì khóa.
+   const datetime dayEnd = dayStart + 2 * 24 * 60 * 60 - 1;
+   MqlCalendarValue values[];
+   ResetLastError();
+   const int total = CalendarValueHistory(values, dayStart, dayEnd, NULL, "USD");
+   if(total < 0)
+   {
+      const int err = GetLastError();
+      if(g_newsAvoidLoggedCalendarErrDateKey != dateKey)
+      {
+         Print("VDualGrid: tránh tin USD L3 — không đọc được lịch kinh tế (err=", err, "). Bỏ chặn tin trong cửa sổ hôm nay+ngày mai.");
+         g_newsAvoidLoggedCalendarErrDateKey = dateKey;
+      }
+      return false;
+   }
+
+   for(int i = 0; i < total; i++)
+   {
+      MqlCalendarEvent ev;
+      if(!CalendarEventById(values[i].event_id, ev))
+         continue;
+      if((int)ev.importance >= 2) // MQL5: High impact (thường hiển thị cấp độ 3)
+      {
+         g_newsAvoidHasUsdHighImpactToday = true;
+         break;
+      }
+   }
+
+   if(g_newsAvoidHasUsdHighImpactToday && g_newsAvoidLoggedBlockedDateKey != dateKey)
+   {
+      Print("VDualGrid: tránh tin USD L3 — hôm nay hoặc ngày mai có tin quan trọng, khóa khởi động phiên mới.");
+      g_newsAvoidLoggedBlockedDateKey = dateKey;
+   }
+   return g_newsAvoidHasUsdHighImpactToday;
 }
 
 //+------------------------------------------------------------------+
@@ -3311,7 +3480,9 @@ int OnInit()
    trade.SetExpertMagicNumber(MagicAA);
    dgt = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    pnt = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
-   g_orderBalanceEmaHandle = INVALID_HANDLE;
+   g_orderBalanceEmaHighHandle = INVALID_HANDLE;
+   g_orderBalanceEmaLowHandle = INVALID_HANDLE;
+   g_orderBalanceEmaCloseHandle = INVALID_HANDLE;
    g_orderBalanceRsiHandle = INVALID_HANDLE;
    g_orderBalanceFastEmaHandle = INVALID_HANDLE;
    g_orderBalanceSlowEmaHandle = INVALID_HANDLE;
@@ -3323,9 +3494,19 @@ int OnInit()
       if(obTf == PERIOD_CURRENT)
          obTf = (ENUM_TIMEFRAMES)_Period;
       const int obP = MathMax(1, OrderBalanceEMAPeriod);
-      g_orderBalanceEmaHandle = iMA(_Symbol, obTf, obP, 0, MODE_EMA, PRICE_CLOSE);
-      if(g_orderBalanceEmaHandle == INVALID_HANDLE)
-         Print("VDualGrid: 6c — không tạo iMA cho lọc EMA cân bằng lệnh.");
+      if(OrderBalanceEMAFilterMode == ORDER_BALANCE_EMA_CLOSE_ONLY)
+      {
+         g_orderBalanceEmaCloseHandle = iMA(_Symbol, obTf, obP, 0, MODE_EMA, PRICE_CLOSE);
+         if(g_orderBalanceEmaCloseHandle == INVALID_HANDLE)
+            Print("VDualGrid: 6c — không tạo iMA EMA(Close) cho lọc EMA cân bằng lệnh.");
+      }
+      else
+      {
+         g_orderBalanceEmaHighHandle = iMA(_Symbol, obTf, obP, 0, MODE_EMA, PRICE_HIGH);
+         g_orderBalanceEmaLowHandle = iMA(_Symbol, obTf, obP, 0, MODE_EMA, PRICE_LOW);
+         if(g_orderBalanceEmaHighHandle == INVALID_HANDLE || g_orderBalanceEmaLowHandle == INVALID_HANDLE)
+            Print("VDualGrid: 6c — không tạo iMA EMA(High/Low) cho lọc EMA cân bằng lệnh.");
+      }
    }
    if(EnableOrderBalanceRSIFilter && (OrderBalanceRSIGreaterLevel >= 0.0 || OrderBalanceRSILessLevel >= 0.0))
    {
@@ -3479,6 +3660,8 @@ int OnInit()
       }
       Print("Lịch chạy — trạng thái hiện tại: ", st);
    }
+   if(EnableAvoidUsdHighImpactNews)
+      Print("Tránh tin USD L3: ", (HasUsdHighImpactNewsPauseWindow(TimeCurrent()) ? "HÔM NAY/NGÀY MAI CÓ TIN (khóa phiên mới)" : "không có tin chặn phiên mới trong hôm nay+ngày mai"));
    Print("========================================");
    if(g_runtimeSessionActive)
       ManageGridOrders();
@@ -3511,10 +3694,20 @@ void OnDeinit(const int reason)
    MonthlyProfitPanelDeleteAll();
    ObjectDelete(0, VDGRID_EA_START_VLINE);
    ObjectDelete(0, VDGRID_EA_START_TEXT);
-   if(g_orderBalanceEmaHandle != INVALID_HANDLE)
+   if(g_orderBalanceEmaHighHandle != INVALID_HANDLE)
    {
-      IndicatorRelease(g_orderBalanceEmaHandle);
-      g_orderBalanceEmaHandle = INVALID_HANDLE;
+      IndicatorRelease(g_orderBalanceEmaHighHandle);
+      g_orderBalanceEmaHighHandle = INVALID_HANDLE;
+   }
+   if(g_orderBalanceEmaLowHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_orderBalanceEmaLowHandle);
+      g_orderBalanceEmaLowHandle = INVALID_HANDLE;
+   }
+   if(g_orderBalanceEmaCloseHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_orderBalanceEmaCloseHandle);
+      g_orderBalanceEmaCloseHandle = INVALID_HANDLE;
    }
    if(g_orderBalanceRsiHandle != INVALID_HANDLE)
    {
@@ -4292,7 +4485,7 @@ void CancelStopOrdersOutsideBaseZone()
 }
 
 //+------------------------------------------------------------------+
-//| Deal OUT: cập nhật P/L tích lũy + bổ sung chờ ảo (replenish).      |
+//| Deal OUT: cập nhật P/L tích lũy + dựng lại chờ ảo.                  |
 //+------------------------------------------------------------------+
 void OnTradeTransaction(const MqlTradeTransaction& trans,
                         const MqlTradeRequest& request,
@@ -4312,7 +4505,7 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
       return;
 
    // Đóng vị thế: bổ sung chờ ảo (không áp khi vừa chờ ảo->market — xem VirtualExecCooldown).
-   if(basePrice > 0.0 && ArraySize(gridLevels) >= MaxGridLevels + 1 && EnableAutoReplenishVirtualOrders)
+   if(basePrice > 0.0 && ArraySize(gridLevels) >= MaxGridLevels + 1)
       ManageGridOrders();
 
    long dealTime = (long)HistoryDealGetInteger(trans.deal, DEAL_TIME);
@@ -4727,7 +4920,6 @@ void InitializeGridLevels()
    sessionStartTime = TimeCurrent();
    sessionStartBalance = GetTradingEquityViewUSD();
    g_sessionStartClosedCapitalUsd = GetTradingClosedCapitalUSD();
-   g_gridBuiltOnceThisSession = false;
    g_sessionMaxAbsDistanceFromBasePips = 0.0;
    g_orderBalanceSessionClosedNegativeUsd = 0.0;
    double tevSess = GetTradingEquityViewUSD();
@@ -4820,10 +5012,6 @@ void ManageGridOrders()
    if(g_compoundTotalProfitActive || g_compoundAfterClearWaitGrid)
       return;
 
-   // Nếu tắt auto replenish: chỉ dựng chờ ảo đúng 1 lần sau khi đặt gốc (mỗi phiên).
-   if(!EnableAutoReplenishVirtualOrders && g_gridBuiltOnceThisSession)
-      return;
-
    CancelStopOrdersOutsideBaseZone();
 
    if(ArraySize(gridLevels) < MaxGridLevels + 1)
@@ -4854,8 +5042,6 @@ void ManageGridOrders()
    }
    RemoveDuplicateOrdersAtLevel();
 
-   if(!EnableAutoReplenishVirtualOrders)
-      g_gridBuiltOnceThisSession = true;
 }
 
 //+------------------------------------------------------------------+
@@ -4976,4 +5162,4 @@ void PlacePendingOrder(ENUM_ORDER_TYPE orderType, ENUM_VGRID_LEG leg, double pri
    Print("VDualGrid: ", EnumToString(orderType), " at ", price, " lot ", lot, " (level ", levelNum > 0 ? "+" : "", levelNum, ")");
 }
 
-//+------------------------------------------------------------------+
+//+---------------------------------------------------------------
