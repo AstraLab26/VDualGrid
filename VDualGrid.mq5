@@ -3019,7 +3019,7 @@ int MpCountOpenOurPositions()
 void MonthlyProfitPanelOnInitState()
 {
    MqlDateTime now;
-   TimeToStruct(TimeTradeServer(), now);
+   TimeToStruct(TimeCurrent(), now); // Dùng giờ server theo tick hiện tại của sàn
    g_mpViewMonthStart = MpMonthStartServer(now.year, now.mon);
     g_mpLastSeenServerMonthStart = g_mpViewMonthStart;
    g_mpAutoFollowCurrentMonth = true;
@@ -3125,7 +3125,7 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
    const double winRatePct = (totalClosedDeals > 0) ? (100.0 * (double)totalWins / (double)totalClosedDeals) : 0.0;
 
    MqlDateTime srvNow;
-   TimeToStruct(TimeTradeServer(), srvNow);
+   TimeToStruct(TimeCurrent(), srvNow); // Dùng giờ server theo tick hiện tại của sàn
    const datetime todayMonthStart = MpMonthStartServer(srvNow.year, srvNow.mon);
    if(g_mpLastSeenServerMonthStart <= 0)
       g_mpLastSeenServerMonthStart = todayMonthStart;
@@ -3362,7 +3362,7 @@ void MonthlyProfitPanelShiftMonth(const int deltaMon)
    }
    g_mpViewMonthStart = MpMonthStartServer(yr, m);
    MqlDateTime now;
-   TimeToStruct(TimeTradeServer(), now);
+   TimeToStruct(TimeCurrent(), now); // Dùng giờ server theo tick hiện tại của sàn
    const datetime todayMonthStart = MpMonthStartServer(now.year, now.mon);
    g_mpAutoFollowCurrentMonth = (g_mpViewMonthStart == todayMonthStart);
    g_mpLastRedrawTick = 0;
