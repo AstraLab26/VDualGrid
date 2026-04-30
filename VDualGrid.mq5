@@ -5,7 +5,7 @@
 // Allow wrapper versions to reuse this file while overriding #property fields.
 #ifndef VDUALGRID_SKIP_PROPERTIES
 #property copyright "VDualGrid"
-#property version   "4.18"
+#property version   "4.19"
 #property description "VDualGrid: lưới chờ ảo, gồng lãi/cân bằng. Nạp/rút không đổi mốc TEV trong code (tin có thể hiện số dư)."
 #endif
 #include <Trade\Trade.mqh>
@@ -69,11 +69,15 @@ input bool   EnableInitBaseEmaVirtGapBlock = true; // Chặn chờ ảo Stop tro
 input int    InitBaseEmaVirtGapEMAPeriod = 50;      // Chu kỳ EMA
 input ENUM_TIMEFRAMES InitBaseEmaVirtGapEMATimeframe = PERIOD_M5; // Khung EMA
 
-input group "━━ 2E) KHỞI ĐỘNG THEO EMA FAST/SLOW ━━"
-input bool   EnableStartupEmaFastSlowCross = true; // Chỉ đặt gốc khi EMA nhanh cắt EMA chậm (khi chưa có gốc)
+input group "━━ 2E) KHỞI ĐỘNG THEO EMA (FAST/SLOW HOẶC XẾP 3 ĐƯỜNG) ━━"
+input bool   EnableStartupEmaFastSlowCross = true; // Chỉ đặt gốc khi EMA nhanh cắt EMA chậm (khi chưa có gốc; bị bỏ qua nếu bật xếp 3 EMA bên dưới)
 input int    StartupEmaFastPeriod = 1;             // Chu kỳ EMA nhanh
 input int    StartupEmaSlowPeriod = 50;            // Chu kỳ EMA chậm
-input ENUM_TIMEFRAMES StartupEmaCrossTimeframe = PERIOD_M5; // Khung EMA fast/slow
+input ENUM_TIMEFRAMES StartupEmaCrossTimeframe = PERIOD_M5; // Khung EMA (dùng cho cắt nhanh/chậm và cho xếp 3 EMA)
+input bool   EnableStartupThreeEmaOrdered = false; // Bật: chỉ đặt gốc khi EMA1>EMA2>EMA3 hoặc EMA1<EMA2<EMA3 (chu kỳ nhỏ→vừa→lớn; ưu tiên hơn cắt nhanh/chậm)
+input int    StartupThreeEmaPeriod1 = 9;           // Chu kỳ EMA 1 (nhỏ nhất)
+input int    StartupThreeEmaPeriod2 = 21;          // Chu kỳ EMA 2 (vừa)
+input int    StartupThreeEmaPeriod3 = 50;          // Chu kỳ EMA 3 (lớn nhất)
 
 input group "━━ 2F) KHỞI ĐỘNG THEO RSI ━━"
 input bool   EnableStartupRsiBaseFilter = false;   // Chỉ đặt gốc khi RSI cắt mức (khi chưa có gốc)
@@ -304,6 +308,9 @@ double g_autoFirstLotSnapshotEma = 0.0;        // 2g: EMA tại lúc chụp
 double g_autoFirstLotGapPips = 0.0;            // 2g: |base-ema| theo pip lúc chụp
 int    g_startupEmaFastHandle = INVALID_HANDLE; // 2e: EMA nhanh — chỉ dùng khi chưa đặt gốc
 int    g_startupEmaSlowHandle = INVALID_HANDLE; // 2e: EMA chậm
+int    g_startupThreeEma1Handle = INVALID_HANDLE; // 2e: EMA chu kỳ nhỏ nhất (xếp 3 đường)
+int    g_startupThreeEma2Handle = INVALID_HANDLE; // 2e: EMA chu kỳ vừa
+int    g_startupThreeEma3Handle = INVALID_HANDLE; // 2e: EMA chu kỳ lớn nhất
 int    g_startupRsiHandle = INVALID_HANDLE;     // 2f: RSI cho lọc khởi động đặt gốc
 string g_baseLineObjectName = "VPGrid_BaseLine";
 #define VDGRID_EA_START_VLINE "VDG_EAStart_V"
@@ -368,6 +375,9 @@ void InitBaseEmaVirtGapPurgeVirtualViolations();
 void StartupEmaCrossReleaseHandles();
 void StartupEmaCrossInitHandles();
 bool StartupEmaFastSlowCrossShift0vs1();
+bool StartupEmaAnyFilterWaiting();
+bool StartupEmaBaseConditionPass();
+bool StartupThreeEmaOrderedPassShift0();
 bool StartupRsiPassForBase(double &rsiOut);
 datetime ServerDayStart(const datetime t);
 long ServerDateKey(const datetime t);
@@ -1118,7 +1128,7 @@ void CompoundResetAfterCommonSlHit()
       return;
    }
 
-   if(EnableStartupEmaFastSlowCross || EnableStartupRsiBaseFilter)
+   if(StartupEmaAnyFilterWaiting() || EnableStartupRsiBaseFilter)
    {
       ArrayResize(gridLevels, 0);
       sessionStartTime = 0;
@@ -1186,7 +1196,7 @@ void ResetAfterSessionDistanceAndTotalProfitHit(const double totalSessionProfitS
       return;
    }
 
-   if(EnableStartupEmaFastSlowCross || EnableStartupRsiBaseFilter)
+   if(StartupEmaAnyFilterWaiting() || EnableStartupRsiBaseFilter)
    {
       ArrayResize(gridLevels, 0);
       sessionStartTime = 0;
@@ -1242,7 +1252,7 @@ void ResetAfterSessionOpenPlusClosedProfitHit(const double totalSessionProfitSwa
       return;
    }
 
-   if(EnableStartupEmaFastSlowCross || EnableStartupRsiBaseFilter)
+   if(StartupEmaAnyFilterWaiting() || EnableStartupRsiBaseFilter)
    {
       ArrayResize(gridLevels, 0);
       sessionStartTime = 0;
@@ -2798,6 +2808,21 @@ void StartupEmaCrossReleaseHandles()
       IndicatorRelease(g_startupEmaSlowHandle);
       g_startupEmaSlowHandle = INVALID_HANDLE;
    }
+   if(g_startupThreeEma1Handle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_startupThreeEma1Handle);
+      g_startupThreeEma1Handle = INVALID_HANDLE;
+   }
+   if(g_startupThreeEma2Handle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_startupThreeEma2Handle);
+      g_startupThreeEma2Handle = INVALID_HANDLE;
+   }
+   if(g_startupThreeEma3Handle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_startupThreeEma3Handle);
+      g_startupThreeEma3Handle = INVALID_HANDLE;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -2806,11 +2831,34 @@ void StartupEmaCrossReleaseHandles()
 void StartupEmaCrossInitHandles()
 {
    StartupEmaCrossReleaseHandles();
-   if(!EnableStartupEmaFastSlowCross)
-      return;
    ENUM_TIMEFRAMES tf = StartupEmaCrossTimeframe;
    if(tf == PERIOD_CURRENT)
       tf = (ENUM_TIMEFRAMES)_Period;
+
+   if(EnableStartupThreeEmaOrdered)
+   {
+      int a = MathMax(1, StartupThreeEmaPeriod1);
+      int b = MathMax(1, StartupThreeEmaPeriod2);
+      int c = MathMax(1, StartupThreeEmaPeriod3);
+      int pSmall = a, pMid = b, pLarge = c;
+      if(pSmall > pMid) { const int t = pSmall; pSmall = pMid; pMid = t; }
+      if(pSmall > pLarge) { const int t = pSmall; pSmall = pLarge; pLarge = t; }
+      if(pMid > pLarge) { const int t = pMid; pMid = pLarge; pLarge = t; }
+      if(pMid <= pSmall)
+         pMid = pSmall + 1;
+      if(pLarge <= pMid)
+         pLarge = pMid + 1;
+      g_startupThreeEma1Handle = iMA(_Symbol, tf, pSmall, 0, MODE_EMA, PRICE_CLOSE);
+      g_startupThreeEma2Handle = iMA(_Symbol, tf, pMid, 0, MODE_EMA, PRICE_CLOSE);
+      g_startupThreeEma3Handle = iMA(_Symbol, tf, pLarge, 0, MODE_EMA, PRICE_CLOSE);
+      if(g_startupThreeEma1Handle == INVALID_HANDLE || g_startupThreeEma2Handle == INVALID_HANDLE
+         || g_startupThreeEma3Handle == INVALID_HANDLE)
+         Print("VDualGrid: 2e — không tạo iMA xếp 3 EMA (chờ thứ tự đường đặt gốc).");
+      return;
+   }
+
+   if(!EnableStartupEmaFastSlowCross)
+      return;
    int pLo = MathMax(1, MathMin(StartupEmaFastPeriod, StartupEmaSlowPeriod));
    int pHi = MathMax(1, MathMax(StartupEmaFastPeriod, StartupEmaSlowPeriod));
    if(pLo >= pHi)
@@ -2843,6 +2891,57 @@ bool StartupEmaFastSlowCrossShift0vs1()
    const bool crossUp = (f0 > s0 && f1 <= s1);
    const bool crossDn = (f0 < s0 && f1 >= s1);
    return (crossUp || crossDn);
+}
+
+//+------------------------------------------------------------------+
+//| 2e: có bất kỳ lọc EMA khởi động nào đang bật (chờ trước khi đặt gốc). |
+//+------------------------------------------------------------------+
+bool StartupEmaAnyFilterWaiting()
+{
+   return (EnableStartupThreeEmaOrdered || EnableStartupEmaFastSlowCross);
+}
+
+//+------------------------------------------------------------------+
+//| 2e: đủ điều kiện EMA để đặt gốc (xếp 3 đường ưu tiên hơn cắt nhanh/chậm). |
+//+------------------------------------------------------------------+
+bool StartupEmaBaseConditionPass()
+{
+   if(EnableStartupThreeEmaOrdered)
+      return StartupThreeEmaOrderedPassShift0();
+   if(EnableStartupEmaFastSlowCross)
+      return StartupEmaFastSlowCrossShift0vs1();
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| 2e: EMA(chu kỳ nhỏ) > EMA(vừa) > EMA(lớn) hoặc cả ba tăng dần ngược lại (shift 0). |
+//+------------------------------------------------------------------+
+bool StartupThreeEmaOrderedPassShift0()
+{
+   if(!EnableStartupThreeEmaOrdered)
+      return true;
+   if(g_startupThreeEma1Handle == INVALID_HANDLE || g_startupThreeEma2Handle == INVALID_HANDLE
+      || g_startupThreeEma3Handle == INVALID_HANDLE)
+      return false;
+
+   if(BarsCalculated(g_startupThreeEma1Handle) < 2
+      || BarsCalculated(g_startupThreeEma2Handle) < 2
+      || BarsCalculated(g_startupThreeEma3Handle) < 2)
+      return false;
+
+   double v1[1], v2[1], v3[1];
+   if(CopyBuffer(g_startupThreeEma1Handle, 0, 0, 1, v1) != 1)
+      return false;
+   if(CopyBuffer(g_startupThreeEma2Handle, 0, 0, 1, v2) != 1)
+      return false;
+   if(CopyBuffer(g_startupThreeEma3Handle, 0, 0, 1, v3) != 1)
+      return false;
+   const double e1 = v1[0], e2 = v2[0], e3 = v3[0];
+   if(!MathIsValidNumber(e1) || !MathIsValidNumber(e2) || !MathIsValidNumber(e3))
+      return false;
+   const bool upStack = (e1 > e2 && e2 > e3);
+   const bool dnStack = (e1 < e2 && e2 < e3);
+   return (upStack || dnStack);
 }
 
 //+------------------------------------------------------------------+
@@ -3592,15 +3691,23 @@ int OnInit()
       Print("VDualGrid: lọc ngày bật nhưng chưa chọn ngày nào — coi như không khóa theo ngày.");
    if(g_runtimeSessionActive)
    {
-      if(EnableStartupEmaFastSlowCross)
+      if(StartupEmaAnyFilterWaiting())
       {
          VirtualPendingClear();
          ArrayResize(gridLevels, 0);
          sessionStartTime = 0;
-         Print("VDualGrid: trong lịch chạy — chờ tín hiệu EMA nhanh cắt EMA chậm mới đặt gốc (khung ", EnumToString(StartupEmaCrossTimeframe == PERIOD_CURRENT ? (ENUM_TIMEFRAMES)_Period : StartupEmaCrossTimeframe), ").");
-         if(EnableResetNotification)
+         if(EnableStartupThreeEmaOrdered)
          {
-            SendResetNotification("EA khởi động — chờ EMA nhanh/chậm đặt gốc");
+            Print("VDualGrid: trong lịch chạy — chờ xếp 3 EMA (EMA nhỏ>EMA vừa>EMA lớn hoặc cả ba ngược lại), khung ",
+                  EnumToString(StartupEmaCrossTimeframe == PERIOD_CURRENT ? (ENUM_TIMEFRAMES)_Period : StartupEmaCrossTimeframe), ".");
+            if(EnableResetNotification)
+               SendResetNotification("EA khởi động — chờ xếp 3 EMA đặt gốc");
+         }
+         else
+         {
+            Print("VDualGrid: trong lịch chạy — chờ tín hiệu EMA nhanh cắt EMA chậm mới đặt gốc (khung ", EnumToString(StartupEmaCrossTimeframe == PERIOD_CURRENT ? (ENUM_TIMEFRAMES)_Period : StartupEmaCrossTimeframe), ").");
+            if(EnableResetNotification)
+               SendResetNotification("EA khởi động — chờ EMA nhanh/chậm đặt gốc");
          }
       }
       else
@@ -3778,12 +3885,19 @@ void OnTick()
             basePrice = 0.0;
             return;
          }
-         if(EnableStartupEmaFastSlowCross)
+         if(StartupEmaAnyFilterWaiting())
          {
-            Print("VDualGrid: vào lịch chạy — chờ EMA nhanh cắt EMA chậm để đặt gốc.");
-            if(EnableResetNotification)
+            if(EnableStartupThreeEmaOrdered)
             {
-               SendResetNotification("Vào lịch — chờ EMA nhanh/chậm đặt gốc");
+               Print("VDualGrid: vào lịch chạy — chờ xếp 3 EMA để đặt gốc.");
+               if(EnableResetNotification)
+                  SendResetNotification("Vào lịch — chờ xếp 3 EMA đặt gốc");
+            }
+            else
+            {
+               Print("VDualGrid: vào lịch chạy — chờ EMA nhanh cắt EMA chậm để đặt gốc.");
+               if(EnableResetNotification)
+                  SendResetNotification("Vào lịch — chờ EMA nhanh/chậm đặt gốc");
             }
          }
          else
@@ -3825,15 +3939,19 @@ void OnTick()
          return;
       if(!IsNowWithinRunWindow(TimeCurrent()))
          return;
-      if(EnableStartupEmaFastSlowCross && !StartupEmaFastSlowCrossShift0vs1())
+      if(StartupEmaAnyFilterWaiting() && !StartupEmaBaseConditionPass())
          return;
       double startupRsi = 0.0;
       if(!StartupRsiPassForBase(startupRsi))
          return;
       basePrice = GridBasePriceAtPlacement();
       InitializeGridLevels();
-      Print("VDualGrid: đủ điều kiện đặt gốc — base=", DoubleToString(basePrice, dgt),
-            (EnableStartupEmaFastSlowCross ? " (lịch + khung giờ + cắt EMA shift0/1)" : " (lịch + khung giờ nếu bật)"));
+      string emaCondTag = " (lịch + khung giờ nếu bật)";
+      if(EnableStartupThreeEmaOrdered)
+         emaCondTag = " (lịch + khung giờ + xếp 3 EMA)";
+      else if(EnableStartupEmaFastSlowCross)
+         emaCondTag = " (lịch + khung giờ + cắt EMA shift0/1)";
+      Print("VDualGrid: đủ điều kiện đặt gốc — base=", DoubleToString(basePrice, dgt), emaCondTag);
       if(EnableResetNotification)
       {
          SendResetNotification("Đủ điều kiện — bắt đầu lưới chờ ảo");
