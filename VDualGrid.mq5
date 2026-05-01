@@ -78,6 +78,7 @@ input bool   EnableStartupThreeEmaOrdered = false; // Bật: chỉ đặt gốc 
 input int    StartupThreeEmaPeriod1 = 9;           // Chu kỳ EMA 1 (nhỏ nhất)
 input int    StartupThreeEmaPeriod2 = 21;          // Chu kỳ EMA 2 (vừa)
 input int    StartupThreeEmaPeriod3 = 50;          // Chu kỳ EMA 3 (lớn nhất)
+input bool   EnableStartupThreeEmaCandleVsEma3 = true; // Bật: nến hiện tại phải cùng phía EMA3 theo chiều xếp EMA
 
 input group "━━ 2F) KHỞI ĐỘNG THEO RSI ━━"
 input bool   EnableStartupRsiBaseFilter = false;   // Chỉ đặt gốc khi RSI cắt mức (khi chưa có gốc)
@@ -279,7 +280,7 @@ double g_compoundFrozenRefPx = 0.0;           // Tham chiếu khóa lúc kích h
 bool g_compoundActivationBuyBasket = false;   // Hướng bước lưới có lợi khi chờ (Bid≥gốc = buy basket)
 bool g_compoundArmed = false;                 // Đạt ngưỡng treo, chờ giá xác nhận (chưa đóng lệnh / chưa xóa chờ ảo)
 bool g_compoundArmBuyBasket = false;          // Hướng chờ khi armed (đồng nghĩa buyBasket khi xác nhận)
-double g_balanceCompoundCarryUsd = 0.0;       // 6c: cộng vào ngưỡng Σ(profit+swap) mở cho ARM/chờ bước gồng 6b; xóa khi kích hoạt gồng / hết gồng / đóng hết EA
+double g_balanceCompoundCarryUsd = 0.0;       // 6c: cộng vào ngưỡng Σ(profit+swap) mở cho ARM/chờ bước gồng 6b; trừ/xóa khi bật trượt SL gồng tổng (sau chờ bước lưới) / hết gồng / đóng hết EA
 double g_compoundSessionClosedNegativeProfitSwapUsd = 0.0; // 6b: Σ phần đóng âm (profit+swap) các deal OUT trong phiên hiện tại (magic+symbol), không commission
 double g_compoundSessionClosedTpProfitSwapUsd = 0.0;       // 6b: Σ(profit+swap) các deal OUT có DEAL_REASON_TP trong phiên hiện tại (magic+symbol), không commission
 double g_compoundSessionClosedTotalProfitSwapUsd = 0.0;    // 6b: Σ(profit+swap) toàn bộ deal OUT trong phiên hiện tại (magic+symbol), không commission
@@ -326,7 +327,6 @@ long     g_newsAvoidCachedDateKey = 0;         // cache theo ngày server cho tr
 bool     g_newsAvoidHasUsdHighImpactToday = false;
 long     g_newsAvoidLoggedBlockedDateKey = 0;  // tránh log lặp khi bị chặn bởi tin
 long     g_newsAvoidLoggedCalendarErrDateKey = 0; // tránh log lỗi lịch lặp theo ngày
-
 //--- Sau khi chờ ảo khớp market: chặn bổ sung lại chờ ảo cùng phía/mức cho tới khi vị thế hiện hoặc hết hạn
 #define VPGRID_VIRTUAL_EXEC_COOLDOWN_SEC 5
 struct VirtualExecCooldownEntry
@@ -386,6 +386,8 @@ void MonthlyProfitPanelDeleteAll();
 void MonthlyProfitPanelRedrawIfNeeded(const bool force);
 void MonthlyProfitPanelOnInitState();
 void MonthlyProfitPanelOnTradeRefresh();
+void CompoundFloatThrHudDeleteAll();
+void CompoundFloatThrHudUpdate(const bool isEaGridReset);
 void ArmStartupRestartDelay(const string reason);
 bool IsStartupRestartDelayBlocking();
 void SendStartupTelegramScreenshot(const string reason);
@@ -631,6 +633,7 @@ void CompoundModeClearState()
    g_compoundArmBuyBasket = false;
    g_balanceCompoundCarryUsd = 0.0;
    OrderBalanceResetSideDwellState();
+   CompoundFloatThrHudUpdate(false);
 }
 
 //+------------------------------------------------------------------+
@@ -648,6 +651,90 @@ double GetCompoundCarryContributionUsd()
    if(carryUsd > 0.0 && EnableOrderBalanceCarryCapPerSession && carryCapUsd > 0.0)
       carryUsd = MathMin(carryUsd, carryCapUsd);
    return carryUsd;
+}
+
+#define COMPOUND_FLOAT_THR_HUD_PREFIX "VDG_CMPFTHR_"
+#define COMPOUND_FLOAT_THR_HUD_PREFIX_LEGACY "VDG_CARRYHUD_"
+
+bool CompoundFloatThrHudLabelSet(const string name, const int x, const int y, const string text,
+                                   const int fontPx, const color clr, const bool bold,
+                                   const ENUM_BASE_CORNER corner)
+{
+   if(ObjectFind(0, name) >= 0)
+      ObjectDelete(0, name);
+   if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0))
+      return false;
+   ObjectSetInteger(0, name, OBJPROP_CORNER, corner);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontPx);
+   ObjectSetString(0, name, OBJPROP_FONT, bold ? "Arial Bold" : "Arial");
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   return true;
+}
+
+void CompoundFloatThrHudDeleteAll()
+{
+   string toDel[];
+   const int total = ObjectsTotal(0, -1, -1);
+   for(int i = 0; i < total; i++)
+   {
+      const string nm = ObjectName(0, i, -1, -1);
+      if(StringFind(nm, COMPOUND_FLOAT_THR_HUD_PREFIX) == 0
+         || StringFind(nm, COMPOUND_FLOAT_THR_HUD_PREFIX_LEGACY) == 0)
+      {
+         const int n = ArraySize(toDel);
+         ArrayResize(toDel, n + 1);
+         toDel[n] = nm;
+      }
+   }
+   for(int j = 0; j < ArraySize(toDel); j++)
+      ObjectDelete(0, toDel[j]);
+}
+
+// HUD ngưỡng gồng lãi tổng: vẽ lại khi reset lưới/EA (isEaGridReset) hoặc khi chữ ngưỡng/phiên đổi (thường do carry 6c).
+void CompoundFloatThrHudUpdate(const bool isEaGridReset)
+{
+   static string s_snapL1 = "";
+   static string s_snapL2 = "";
+   static bool s_snapValid = false;
+
+   const ENUM_BASE_CORNER crn = CORNER_RIGHT_UPPER;
+   const int x = 14;
+   const int y1 = 22;
+   const int y2 = 38;
+   const color C_MUTED = C'140,145,158';
+   const color C_BLUE = C'60,150,255';
+
+   string line1;
+   if(EnableCompoundTotalFloatingProfit && CompoundTotalProfitTriggerUSD > 0.0)
+   {
+      const double thrUsd = GetCompoundFloatingTriggerThresholdUsd();
+      line1 = "Ngưỡng gồng lãi tổng: " + DoubleToString(thrUsd, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY);
+   }
+   else
+      line1 = "Gồng lãi tổng: tắt hoặc ngưỡng ≤ 0";
+
+   string line2 = "Phiên lưới: ";
+   if(sessionStartTime > 0)
+      line2 += TimeToString(sessionStartTime, TIME_DATE | TIME_MINUTES);
+   else
+      line2 += "—";
+   if(!g_runtimeSessionActive)
+      line2 += "  |  Lịch: chờ phiên";
+
+   if(!isEaGridReset && s_snapValid && line1 == s_snapL1 && line2 == s_snapL2)
+      return;
+   s_snapValid = true;
+   s_snapL1 = line1;
+   s_snapL2 = line2;
+
+   CompoundFloatThrHudLabelSet(COMPOUND_FLOAT_THR_HUD_PREFIX "L1", x, y1, line1, 9, C_BLUE, true, crn);
+   CompoundFloatThrHudLabelSet(COMPOUND_FLOAT_THR_HUD_PREFIX "L2", x, y2, line2, 8, C_MUTED, false, crn);
+   ChartRedraw(0);
 }
 
 double GetCompoundOpenProfitSwapContribution(const ulong ticket)
@@ -809,11 +896,8 @@ void CompoundApplyCommonSlLineToBasketPositions(const bool buyBasket, const doub
 //+------------------------------------------------------------------+
 void CompoundOnActivationConfirmed(const bool buyBasket, const double refPx)
 {
-   const double usedCarryUsd = GetCompoundCarryContributionUsd();
-   if(EnableOrderBalanceCarryCapPerSession && OrderBalanceCarryCapPerSessionUSD > 0.0 && g_balanceCompoundCarryUsd > 0.0)
-      g_balanceCompoundCarryUsd = MathMax(0.0, g_balanceCompoundCarryUsd - MathMax(0.0, usedCarryUsd));
-   else
-      g_balanceCompoundCarryUsd = 0.0;
+   // Carry 6c giữ đến khi vào hẳn trượt SL gồng lãi tổng (ProcessCompoundPostActivationGridStepWait),
+   // để ngưỡng hiển thị không tụt về gốc input trong lúc chờ bước lưới / hủy pha chờ vẫn còn carry.
    VirtualPendingClear();
    g_compoundFrozenRefPx = refPx;
    g_compoundActivationBuyBasket = buyBasket;
@@ -947,6 +1031,16 @@ void ProcessCompoundPostActivationGridStepWait(const double totalOpenProfitSwapU
       }
       Print("VDualGrid: Gồng lãi — SELL basket: đã đóng toàn bộ BUY (phiên).");
    }
+
+   // Tiêu thụ carry 6c tại thời điểm bật trượt SL gồng lãi tổng (đã qua chờ bước lưới), không phải lúc mới xóa chờ ảo.
+   {
+      const double usedCarryUsd = GetCompoundCarryContributionUsd();
+      if(EnableOrderBalanceCarryCapPerSession && OrderBalanceCarryCapPerSessionUSD > 0.0 && g_balanceCompoundCarryUsd > 0.0)
+         g_balanceCompoundCarryUsd = MathMax(0.0, g_balanceCompoundCarryUsd - MathMax(0.0, usedCarryUsd));
+      else
+         g_balanceCompoundCarryUsd = 0.0;
+   }
+   CompoundFloatThrHudUpdate(false);
 
    g_compoundBuyBasketMode = (bid >= basePrice);
    g_compoundAfterClearWaitGrid = false;
@@ -1114,6 +1208,7 @@ void CompoundResetAfterCommonSlHit()
    CloseAllPositionsAndOrders();
    if(keepCarryForNextSession)
       g_balanceCompoundCarryUsd = carryBackup;
+   CompoundFloatThrHudUpdate(false);
 
    if(!IsSchedulingAllowedForNewSession(TimeCurrent()))
    {
@@ -1125,6 +1220,7 @@ void CompoundResetAfterCommonSlHit()
       Print("VDualGrid: Gồng lãi — chạm SL chung, reset ngoài lịch chạy — EA chờ giờ/ngày.");
       if(EnableResetNotification)
          SendResetNotification("Gồng lãi: chạm SL chung — ngoài lịch chạy");
+      CompoundFloatThrHudUpdate(false);
       return;
    }
 
@@ -1136,6 +1232,7 @@ void CompoundResetAfterCommonSlHit()
       Print("VDualGrid: Gồng lãi — chạm SL chung — chờ điều kiện khởi động (EMA/RSI) để đặt gốc mới.");
       if(EnableResetNotification)
          SendResetNotification("Gồng lãi: SL chung — chờ điều kiện EMA/RSI đặt gốc");
+      CompoundFloatThrHudUpdate(false);
       return;
    }
 
@@ -1147,6 +1244,7 @@ void CompoundResetAfterCommonSlHit()
       Print("VDualGrid: Reset sau SL chung — chờ hết delay khởi động lại trước khi đặt gốc mới.");
       if(EnableResetNotification)
          SendResetNotification("Reset sau SL chung — chờ delay khởi động lại");
+      CompoundFloatThrHudUpdate(false);
       return;
    }
 
@@ -1177,6 +1275,7 @@ void ResetAfterSessionDistanceAndTotalProfitHit(const double totalSessionProfitS
    restoredCarryUsd += sessionLossCarryUsd;
    if(restoredCarryUsd > 0.0)
       g_balanceCompoundCarryUsd = restoredCarryUsd;
+   CompoundFloatThrHudUpdate(false);
 
    const string extra = " | maxDist=" + DoubleToString(g_sessionMaxAbsDistanceFromBasePips, 1)
                      + " pip | tổng P/L phiên=" + DoubleToString(totalSessionProfitSwapUsd, 2)
@@ -1193,6 +1292,7 @@ void ResetAfterSessionDistanceAndTotalProfitHit(const double totalSessionProfitS
       Print("VDualGrid: Reset 6d — ngoài lịch chạy, EA chờ.", extra);
       if(EnableResetNotification)
          SendResetNotification("Reset 6d: ngoài lịch chạy" + extra);
+      CompoundFloatThrHudUpdate(false);
       return;
    }
 
@@ -1205,6 +1305,7 @@ void ResetAfterSessionDistanceAndTotalProfitHit(const double totalSessionProfitS
       Print("VDualGrid: Reset 6d — chờ điều kiện EMA/RSI để đặt gốc mới.", extra);
       if(EnableResetNotification)
          SendResetNotification("Reset 6d: chờ điều kiện EMA/RSI" + extra);
+      CompoundFloatThrHudUpdate(false);
       return;
    }
 
@@ -1234,6 +1335,7 @@ void ResetAfterSessionOpenPlusClosedProfitHit(const double totalSessionProfitSwa
    restoredCarryUsd += sessionLossCarryUsd;
    if(restoredCarryUsd > 0.0)
       g_balanceCompoundCarryUsd = restoredCarryUsd;
+   CompoundFloatThrHudUpdate(false);
 
    const string extra = " | tổng P/L phiên (mở+đóng)=" + DoubleToString(totalSessionProfitSwapUsd, 2)
                      + " USD | carry phiên sau=" + DoubleToString(sessionLossCarryUsd, 2) + " USD";
@@ -1249,6 +1351,7 @@ void ResetAfterSessionOpenPlusClosedProfitHit(const double totalSessionProfitSwa
       Print("VDualGrid: Reset 6e — ngoài lịch chạy, EA chờ.", extra);
       if(EnableResetNotification)
          SendResetNotification("Reset 6e: ngoài lịch chạy" + extra);
+      CompoundFloatThrHudUpdate(false);
       return;
    }
 
@@ -1261,6 +1364,7 @@ void ResetAfterSessionOpenPlusClosedProfitHit(const double totalSessionProfitSwa
       Print("VDualGrid: Reset 6e — chờ điều kiện EMA/RSI để đặt gốc mới.", extra);
       if(EnableResetNotification)
          SendResetNotification("Reset 6e: chờ điều kiện EMA/RSI" + extra);
+      CompoundFloatThrHudUpdate(false);
       return;
    }
 
@@ -1287,6 +1391,7 @@ void ResetAfterPrevSessionPeakReached(const double targetUsd, const double curre
    basePrice = 0.0;
    g_sessionMaxAbsDistanceFromBasePips = 0.0;
    g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   CompoundFloatThrHudUpdate(false);
 
    if(!g_runtimeSessionActive)
    {
@@ -2572,16 +2677,17 @@ double GetPositionPnL(ulong ticket)
 }
 
 //+------------------------------------------------------------------+
-//| Tổng float (profit+swap) mọi vị thế mở theo magic EA.            |
+//| Tổng float (profit+swap) vị thế mở: magic EA + symbol biểu đồ (không gộp symbol khác). |
 //+------------------------------------------------------------------+
 double GetOurMagicFloatingUSD()
 {
    double f = 0.0;
    for(int i = 0; i < PositionsTotal(); i++)
    {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket <= 0) continue;
-      if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(!PositionIsOurSymbolAndMagic(ticket))
          continue;
       f += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
    }
@@ -2914,7 +3020,7 @@ bool StartupEmaBaseConditionPass()
 }
 
 //+------------------------------------------------------------------+
-//| 2e: EMA(chu kỳ nhỏ) > EMA(vừa) > EMA(lớn) hoặc cả ba tăng dần ngược lại (shift 0). |
+//| 2e: EMA1>EMA2>EMA3 (và tùy chọn nến hiện tại > EMA3), hoặc EMA1<EMA2<EMA3 (và tùy chọn nến hiện tại < EMA3). |
 //+------------------------------------------------------------------+
 bool StartupThreeEmaOrderedPassShift0()
 {
@@ -2939,9 +3045,25 @@ bool StartupThreeEmaOrderedPassShift0()
    const double e1 = v1[0], e2 = v2[0], e3 = v3[0];
    if(!MathIsValidNumber(e1) || !MathIsValidNumber(e2) || !MathIsValidNumber(e3))
       return false;
+
    const bool upStack = (e1 > e2 && e2 > e3);
    const bool dnStack = (e1 < e2 && e2 < e3);
-   return (upStack || dnStack);
+   if(!EnableStartupThreeEmaCandleVsEma3)
+      return (upStack || dnStack);
+
+   ENUM_TIMEFRAMES tf = StartupEmaCrossTimeframe;
+   if(tf == PERIOD_CURRENT)
+      tf = (ENUM_TIMEFRAMES)_Period;
+   double c0[1];
+   if(CopyClose(_Symbol, tf, 0, 1, c0) != 1)
+      return false;
+   const double close0 = c0[0];
+   if(!MathIsValidNumber(close0))
+      return false;
+
+   const bool upPass = (upStack && close0 > e3);
+   const bool dnPass = (dnStack && close0 < e3);
+   return (upPass || dnPass);
 }
 
 //+------------------------------------------------------------------+
@@ -2987,8 +3109,12 @@ bool StartupRsiPassForBase(double &rsiOut)
 
 //+------------------------------------------------------------------+
 //| 10: Panel bảng lợi nhuận tháng (deal OUT, magic+symbol EA).       |
+//| Tiền tố object có Magic để không trùng khi >1 EA cùng biểu đồ.     |
 //+------------------------------------------------------------------+
-#define MP_PREFIX "VDG_MPROF_"
+string MpPanelObjPrefix()
+{
+   return "VDG_MPROF_" + IntegerToString(MagicAA) + "_";
+}
 
 int MpDaysInMonth(const int year, const int mon)
 {
@@ -3022,12 +3148,13 @@ bool MpIsSameMonth(const datetime t, const datetime monthStart)
 
 void MonthlyProfitPanelDeleteAll()
 {
+   const string pref = MpPanelObjPrefix();
    string toDel[];
    const int total = ObjectsTotal(0, -1, -1);
    for(int i = 0; i < total; i++)
    {
       const string nm = ObjectName(0, i, -1, -1);
-      if(StringFind(nm, MP_PREFIX) == 0)
+      if(StringFind(nm, pref) == 0)
       {
          const int n = ArraySize(toDel);
          ArrayResize(toDel, n + 1);
@@ -3108,7 +3235,7 @@ int MpCountOpenOurPositions()
       const ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !PositionSelectByTicket(ticket))
          continue;
-      if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
+      if(!PositionIsOurSymbolAndMagic(ticket))
          continue;
       n++;
    }
@@ -3174,7 +3301,9 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
 
    double monthTotal = 0.0;
    int totalClosedDeals = 0;
-   int totalWins = 0;
+   // Chỉ tháng đang xem (vy/vmon): sang tháng mới = tổng lại từ deal tháng đó (chưa có deal → 0).
+   double monthSumUsdProfit = 0.0;   // Σ lệnh đóng lãi trong tháng (profit+swap+commission), >0
+   double monthSumUsdLossAbs = 0.0; // Σ |lỗ| trong tháng (deal đóng âm)
    int tradingDays = 0;
 
    if(HistorySelect(tFrom, tTo))
@@ -3191,6 +3320,8 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
          if(HistoryDealGetInteger(dealTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT)
             continue;
          if(!IsOurMagic(HistoryDealGetInteger(dealTicket, DEAL_MAGIC)))
+            continue;
+         if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol)
             continue;
          const datetime dt = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
          if(dt < tFrom || dt > tTo)
@@ -3210,7 +3341,9 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
          monthTotal += fullPnL;
          totalClosedDeals++;
          if(fullPnL > 0.0)
-            totalWins++;
+            monthSumUsdProfit += fullPnL;
+         else if(fullPnL < 0.0)
+            monthSumUsdLossAbs += -fullPnL;
       }
    }
 
@@ -3221,7 +3354,10 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
    }
 
    const double avgDaily = (tradingDays > 0) ? (monthTotal / (double)tradingDays) : 0.0;
-   const double winRatePct = (totalClosedDeals > 0) ? (100.0 * (double)totalWins / (double)totalClosedDeals) : 0.0;
+   const double usdWinLossDenom = monthSumUsdProfit + monthSumUsdLossAbs;
+   double winRateUsdPct = 0.0;
+   if(usdWinLossDenom > 1e-8)
+      winRateUsdPct = 100.0 * monthSumUsdProfit / usdWinLossDenom;
 
    MqlDateTime srvNow;
    TimeToStruct(TimeCurrent(), srvNow); // Dùng giờ server theo tick hiện tại của sàn
@@ -3258,69 +3394,103 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
    const color C_BLUE = C'60,150,255';
 
    const int W = 900;
-   const int H = 560;
+   const int H = 604;
    const int pad = 10;
    int y = oy;
 
-   MpRectCreate(MP_PREFIX "main", ox, y, W, H, C_BG, C_BORDER, crn);
+   MpRectCreate(MpPanelObjPrefix() + "main", ox, y, W, H, C_BG, C_BORDER, crn);
    y += pad;
 
-   MpLabelCreate(MP_PREFIX "hdr", ox + pad, y, "BẢNG LỢI NHUẬN THÁNG", fTitle, C_TEXT, true, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "hdr", ox + pad, y,
+                  "BẢNG LỢI NHUẬN THÁNG (#" + IntegerToString(MagicAA) + ")", fTitle, C_TEXT, true, crn);
    y += 26;
 
    const int cardW = (W - pad * 5) / 4;
-   const int cardH = 82;
+   const int cardH = 98;
    const int gap = pad;
    int cx = ox + pad;
 
-   MpRectCreate(MP_PREFIX "c1", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
-   MpLabelCreate(MP_PREFIX "c1t", cx + 8, y + 6, "TỔNG LỢI NHUẬN THÁNG", f0, C_MUTED, false, crn);
+   MpRectCreate(MpPanelObjPrefix() + "c1", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "c1t", cx + 8, y + 6, "TỔNG LỢI NHUẬN THÁNG", f0, C_MUTED, false, crn);
    string sTot = (monthTotal >= 0.0 ? "+" : "") + DoubleToString(monthTotal, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY);
-   MpLabelCreate(MP_PREFIX "c1v", cx + 8, y + 24, sTot, fBig, (monthTotal >= 0.0 ? C_GREEN : C_RED), true, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "c1v", cx + 8, y + 24, sTot, fBig, (monthTotal >= 0.0 ? C_GREEN : C_RED), true, crn);
    if(isViewingCurrentMonth)
-      MpLabelCreate(MP_PREFIX "c1b", cx + cardW - 86, y + 30, "THÁNG NÀY", f0 - 1, C_GREEN, true, crn);
+      MpLabelCreate(MpPanelObjPrefix() + "c1b", cx + cardW - 86, y + 30, "THÁNG NÀY", f0 - 1, C_GREEN, true, crn);
 
    cx += cardW + gap;
-   MpRectCreate(MP_PREFIX "c2", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
-   MpLabelCreate(MP_PREFIX "c2t", cx + 8, y + 6, "LỢI NHUẬN TB NGÀY", f0, C_MUTED, false, crn);
+   MpRectCreate(MpPanelObjPrefix() + "c2", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "c2t", cx + 8, y + 6, "LỢI NHUẬN TB NGÀY", f0, C_MUTED, false, crn);
    string sAvg = (avgDaily >= 0.0 ? "+" : "") + DoubleToString(avgDaily, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY);
-   MpLabelCreate(MP_PREFIX "c2v", cx + 8, y + 24, sAvg, fBig, C_TEXT, true, crn);
-   MpLabelCreate(MP_PREFIX "c2s", cx + 8, y + 58, IntegerToString(tradingDays) + " Ngày giao dịch", f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "c2v", cx + 8, y + 24, sAvg, fBig, C_TEXT, true, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "c2s", cx + 8, y + 74, IntegerToString(tradingDays) + " Ngày giao dịch", f0 - 1, C_MUTED, false, crn);
 
    cx += cardW + gap;
-   MpRectCreate(MP_PREFIX "c3", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
-   MpLabelCreate(MP_PREFIX "c3t", cx + 8, y + 6, "TỶ LỆ THẮNG", f0, C_MUTED, false, crn);
-   MpLabelCreate(MP_PREFIX "c3v", cx + 8, y + 24, DoubleToString(winRatePct, 1) + "%", fBig, C_TEXT, true, crn);
-   const string trendSub = (totalClosedDeals == 0 ? "Chưa có lệnh đóng" : (winRatePct >= 50.0 ? "Xu hướng tăng" : "Xu hướng giảm"));
-   MpLabelCreate(MP_PREFIX "c3s", cx + 8, y + 58, trendSub, f0 - 1, C_MUTED, false, crn);
+   MpRectCreate(MpPanelObjPrefix() + "c3", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "c3t", cx + 8, y + 4, "LÃI/LỖ USD (THEO THÁNG)", f0, C_MUTED, false, crn);
+   const color c3PctClr = (totalClosedDeals == 0 ? C_TEXT : (winRateUsdPct >= 50.0 ? C_GREEN : C_RED));
+   MpLabelCreate(MpPanelObjPrefix() + "c3v", cx + 8, y + 22, DoubleToString(winRateUsdPct, 1) + "%", fBig, c3PctClr, true, crn);
+   const int c3sx = cx + 8;
+   const int c3fSmall = f0 - 2;
+   const string c3MonthOnly = "Tháng " + IntegerToString(vmon) + "/" + IntegerToString(vy);
+   MpLabelCreate(MpPanelObjPrefix() + "c3sm", c3sx, y + 42, c3MonthOnly, f0 - 1, C_MUTED, false, crn);
+
+   const string c3Cur = AccountInfoString(ACCOUNT_CURRENCY);
+   if(totalClosedDeals == 0)
+      MpLabelCreate(MpPanelObjPrefix() + "c3p", c3sx, y + 56, "Chưa có lệnh đóng (0)", c3fSmall, C_MUTED, false, crn);
+   else if(usdWinLossDenom <= 1e-8)
+      MpLabelCreate(MpPanelObjPrefix() + "c3p", c3sx, y + 56, "Hòa vốn (0 USD)", c3fSmall, C_MUTED, false, crn);
+   else
+   {
+      const bool c3Up = (winRateUsdPct >= 50.0);
+      const color c3BadgeBg = (c3Up ? C'24,92,58' : C'110,42,42');
+      const color c3BadgeFg = (c3Up ? C'160,255,200' : C'255,190,190');
+      const int c3bw = 52;
+      const int c3bh = 16;
+      const int c3bx = cx + cardW - 8 - c3bw;
+      const int c3by = y + 40;
+      MpRectCreate(MpPanelObjPrefix() + "c3bdg", c3bx, c3by, c3bw, c3bh, c3BadgeBg, c3BadgeBg, crn);
+      MpLabelCreate(MpPanelObjPrefix() + "c3bdt", c3bx + 10, c3by + 2, (c3Up ? "Tăng" : "Giảm"), c3fSmall, c3BadgeFg, true, crn);
+      MpLabelCreate(MpPanelObjPrefix() + "c3p", c3sx, y + 56, "Lãi +" + DoubleToString(monthSumUsdProfit, 2), c3fSmall, C_MUTED, false, crn);
+      MpLabelCreate(MpPanelObjPrefix() + "c3l", c3sx, y + 68, "Lỗ " + DoubleToString(monthSumUsdLossAbs, 2) + " " + c3Cur, c3fSmall, C_MUTED, false, crn);
+   }
 
    cx += cardW + gap;
-   MpRectCreate(MP_PREFIX "c4", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
-   MpLabelCreate(MP_PREFIX "c4t", cx + 8, y + 6, "LỢI NHUẬN TỪ LÚC GẮN EA", f0, C_MUTED, false, crn);
+   MpRectCreate(MpPanelObjPrefix() + "c4", cx, y, cardW, cardH, C_CARD, C_BORDER, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "c4t", cx + 8, y + 6, "LỢI NHUẬN TỪ LÚC GẮN EA", f0, C_MUTED, false, crn);
    const double attachProfitUsd = eaCumulativeTradingPL;
    string sAttach = (attachProfitUsd >= 0.0 ? "+" : "") + DoubleToString(attachProfitUsd, 2) + " " + AccountInfoString(ACCOUNT_CURRENCY);
-   MpLabelCreate(MP_PREFIX "c4v", cx + 8, y + 24, sAttach, fBig, (attachProfitUsd >= 0.0 ? C_GREEN : C_RED), true, crn);
-   MpLabelCreate(MP_PREFIX "c4s", cx + 8, y + 58, "Không reset theo tháng", f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "c4v", cx + 8, y + 24, sAttach, fBig, (attachProfitUsd >= 0.0 ? C_GREEN : C_RED), true, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "c4s", cx + 8, y + 74, "Không reset theo tháng", f0 - 1, C_MUTED, false, crn);
 
-   y += cardH + 16;
+   y += cardH + 10;
+   {
+      string sCmpThr;
+      if(EnableCompoundTotalFloatingProfit && CompoundTotalProfitTriggerUSD > 0.0)
+         sCmpThr = "Ngưỡng gồng lãi tổng: " + DoubleToString(GetCompoundFloatingTriggerThresholdUsd(), 2)
+                   + " " + AccountInfoString(ACCOUNT_CURRENCY);
+      else
+         sCmpThr = "Gồng lãi tổng: tắt hoặc ngưỡng ≤ 0";
+      MpLabelCreate(MpPanelObjPrefix() + "cmpthr", ox + pad, y, sCmpThr, f0, C_BLUE, true, crn);
+   }
+   y += 22;
 
-   MpButtonCreate(MP_PREFIX "prev", ox + pad, y, 26, 22, "<", crn);
+   MpButtonCreate(MpPanelObjPrefix() + "prev", ox + pad, y, 26, 22, "<", crn);
    string monthTitle = "Tháng " + IntegerToString(vmon) + ", " + IntegerToString(vy);
-   MpLabelCreate(MP_PREFIX "month", ox + pad + 34, y + 3, monthTitle, f0, C_TEXT, true, crn);
-   MpButtonCreate(MP_PREFIX "next", ox + pad + 34 + 150, y, 26, 22, ">", crn);
+   MpLabelCreate(MpPanelObjPrefix() + "month", ox + pad + 34, y + 3, monthTitle, f0, C_TEXT, true, crn);
+   MpButtonCreate(MpPanelObjPrefix() + "next", ox + pad + 34 + 150, y, 26, 22, ">", crn);
 
    int legX = ox + W - pad - 300;
-   MpLabelCreate(MP_PREFIX "lg0", legX, y + 3, "●", f0 - 1, C_GREEN, false, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "lg0", legX, y + 3, "●", f0 - 1, C_GREEN, false, crn);
    legX += 14;
-   MpLabelCreate(MP_PREFIX "lg1", legX, y + 3, "Lợi nhuận", f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "lg1", legX, y + 3, "Lợi nhuận", f0 - 1, C_MUTED, false, crn);
    legX += 62;
-   MpLabelCreate(MP_PREFIX "lg2", legX, y + 3, "●", f0 - 1, C_RED, false, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "lg2", legX, y + 3, "●", f0 - 1, C_RED, false, crn);
    legX += 14;
-   MpLabelCreate(MP_PREFIX "lg3", legX, y + 3, "Thua lỗ", f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "lg3", legX, y + 3, "Thua lỗ", f0 - 1, C_MUTED, false, crn);
    legX += 54;
-   MpLabelCreate(MP_PREFIX "lg4", legX, y + 3, "●", f0 - 1, C_BLUE, false, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "lg4", legX, y + 3, "●", f0 - 1, C_BLUE, false, crn);
    legX += 14;
-   MpLabelCreate(MP_PREFIX "lg5", legX, y + 3, "Hôm nay", f0 - 1, C_MUTED, false, crn);
+   MpLabelCreate(MpPanelObjPrefix() + "lg5", legX, y + 3, "Hôm nay", f0 - 1, C_MUTED, false, crn);
 
    y += 36;
    const string dowNames[7] = {"CHỦ NHẬT", "THỨ HAI", "THỨ BA", "THỨ TƯ", "THỨ NĂM", "THỨ SÁU", "THỨ BẢY"};
@@ -3329,7 +3499,7 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
    int hx = ox + pad;
    for(int c = 0; c < 7; c++)
    {
-      MpLabelCreate(MP_PREFIX "hd" + IntegerToString(c), hx + 2, y, dowNames[c], f0 - 1, C_MUTED, false, crn);
+      MpLabelCreate(MpPanelObjPrefix() + "hd" + IntegerToString(c), hx + 2, y, dowNames[c], f0 - 1, C_MUTED, false, crn);
       hx += cellW;
    }
    y += 24;
@@ -3381,13 +3551,13 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
                                || (vy == srvNow.year && vmon == srvNow.mon && curDay < srvNow.day);
 
          if(isToday)
-            MpRectCreate(MP_PREFIX "cd" + IntegerToString(curDay), cellX + 1, cellY + 1, cellW - 2, cellH - 2,
+            MpRectCreate(MpPanelObjPrefix() + "cd" + IntegerToString(curDay), cellX + 1, cellY + 1, cellW - 2, cellH - 2,
                          C_CARD, C_BLUE, crn);
          else
-            MpRectCreate(MP_PREFIX "cd" + IntegerToString(curDay), cellX + 1, cellY + 1, cellW - 2, cellH - 2,
+            MpRectCreate(MpPanelObjPrefix() + "cd" + IntegerToString(curDay), cellX + 1, cellY + 1, cellW - 2, cellH - 2,
                          C_CARD, C_BORDER, crn);
 
-         MpLabelCreate(MP_PREFIX "dn" + IntegerToString(curDay), cellX + 6, cellY + 4,
+         MpLabelCreate(MpPanelObjPrefix() + "dn" + IntegerToString(curDay), cellX + 6, cellY + 4,
                        IntegerToString(curDay), f0, C_TEXT, true, crn);
 
          string line2 = "";
@@ -3430,11 +3600,11 @@ void MonthlyProfitPanelRedrawIfNeeded(const bool force)
             line3 = "";
          }
 
-         MpLabelCreate(MP_PREFIX "dp" + IntegerToString(curDay), cellX + 4, cellY + 20, line2, f0 - 1, c2, false, crn);
-         MpLabelCreate(MP_PREFIX "dc" + IntegerToString(curDay), cellX + 4, cellY + 34, line3, f0 - 2, C_MUTED, false, crn);
+         MpLabelCreate(MpPanelObjPrefix() + "dp" + IntegerToString(curDay), cellX + 4, cellY + 20, line2, f0 - 1, c2, false, crn);
+         MpLabelCreate(MpPanelObjPrefix() + "dc" + IntegerToString(curDay), cellX + 4, cellY + 34, line3, f0 - 2, C_MUTED, false, crn);
 
          if(isToday)
-            MpLabelCreate(MP_PREFIX "dot" + IntegerToString(curDay), cellX + cellW - 16, cellY + 4, "●", f0 - 1, C_BLUE, false, crn);
+            MpLabelCreate(MpPanelObjPrefix() + "dot" + IntegerToString(curDay), cellX + cellW - 16, cellY + 4, "●", f0 - 1, C_BLUE, false, crn);
 
          curDay++;
       }
@@ -3789,6 +3959,7 @@ int OnInit()
    EaStartTimeObjectsApplyOrRemove();
    SendStartupTelegramScreenshot("EA vừa gắn vào biểu đồ");
    g_isOnInitBootstrap = false;
+   CompoundFloatThrHudUpdate(true);
    return(INIT_SUCCEEDED);
 }
 
@@ -3798,6 +3969,7 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   CompoundFloatThrHudDeleteAll();
    MonthlyProfitPanelDeleteAll();
    ObjectDelete(0, VDGRID_EA_START_VLINE);
    ObjectDelete(0, VDGRID_EA_START_TEXT);
@@ -3970,13 +4142,17 @@ void OnTick()
    }
 
    ProcessVirtualPendingExecutions();
-   ProcessOrderBalanceMode();
+   const bool orderBalanceJustExecuted = ProcessOrderBalanceMode();
+   if(orderBalanceJustExecuted)
+      CompoundFloatThrHudUpdate(false);
 
    double compoundOpenProfitSwapUsd = 0.0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket <= 0 || !IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(!PositionIsOurSymbolAndMagic(ticket))
          continue;
       if(!CompoundPositionPassesSessionFilter(ticket))
          continue;
@@ -4091,12 +4267,12 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       return;
    if(!EnableMonthlyProfitPanel)
       return;
-   if(sparam == MP_PREFIX "prev")
+   if(sparam == MpPanelObjPrefix() + "prev")
    {
       MonthlyProfitPanelShiftMonth(-1);
       ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
    }
-   else if(sparam == MP_PREFIX "next")
+   else if(sparam == MpPanelObjPrefix() + "next")
    {
       MonthlyProfitPanelShiftMonth(1);
       ObjectSetInteger(0, sparam, OBJPROP_STATE, false);
@@ -4132,9 +4308,11 @@ void UpdateSessionStatsForNotification()
    double totalLot = 0, maxLot = 0;
    for(int i = 0; i < PositionsTotal(); i++)
    {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket <= 0) continue;
-      if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC))) continue;
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(!PositionIsOurSymbolAndMagic(ticket))
+         continue;
       double vol = PositionGetDouble(POSITION_VOLUME);
       totalLot += vol;
       if(vol > maxLot) maxLot = vol;
@@ -4621,6 +4799,8 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
       return;
    if(!IsOurMagic(HistoryDealGetInteger(trans.deal, DEAL_MAGIC)))
       return;
+   if(HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol)
+      return;
 
    // Đóng vị thế: bổ sung chờ ảo (không áp khi vừa chờ ảo->market — xem VirtualExecCooldown).
    if(basePrice > 0.0 && ArraySize(gridLevels) >= MaxGridLevels + 1)
@@ -5057,6 +5237,7 @@ void InitializeGridLevels()
 
    InitBaseEmaVirtGapSnapshotFromGridInit();
    AutoFirstLotByBaseEmaSnapshotFromGridInit();
+   CompoundFloatThrHudUpdate(true);
 }
 
 //+------------------------------------------------------------------+
