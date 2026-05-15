@@ -5,7 +5,7 @@
 // Allow wrapper versions to reuse this file while overriding #property fields.
 #ifndef VDUALGRID_SKIP_PROPERTIES
 #property copyright "VDualGrid"
-#property version   "4.19"
+#property version   "4.25"
 #property description "VDualGrid: lưới chờ ảo, gồng lãi/cân bằng. Nạp/rút không đổi mốc TEV trong code (tin có thể hiện số dư)."
 #endif
 #include <Trade\Trade.mqh>
@@ -36,7 +36,9 @@ enum ENUM_VGRID_LEG
    VGRID_LEG_SELL_ABOVE = 2,  // C: Bậc dương + Sell (SELL LIMIT)
    VGRID_LEG_BUY_BELOW = 3,   // D: Bậc âm + Buy (BUY LIMIT)
    VGRID_LEG_BUY_ABOVE_E = 4, // E: Bậc dương + Buy (chạy song song độc lập với A)
-   VGRID_LEG_SELL_BELOW_F = 5 // F: Bậc âm + Sell (chạy song song độc lập với B)
+   VGRID_LEG_SELL_BELOW_F = 5, // F: Bậc âm + Sell (chạy song song độc lập với B)
+   VGRID_LEG_SELL_ABOVE_G = 6,  // G: Bậc dương + Sell (chạy song song độc lập với C)
+   VGRID_LEG_BUY_BELOW_H = 7    // H: Bậc âm + Buy (chạy song song độc lập với D)
 };
 
 // 6b: kiểu tính tiến độ ngưỡng gồng lãi tổng.
@@ -73,19 +75,25 @@ input group "━━ 2E) KHỞI ĐỘNG THEO EMA (FAST/SLOW HOẶC XẾP 3 ĐƯ�
 input bool   EnableStartupEmaFastSlowCross = true; // Chỉ đặt gốc khi EMA nhanh cắt EMA chậm (khi chưa có gốc; bị bỏ qua nếu bật xếp 3 EMA bên dưới)
 input int    StartupEmaFastPeriod = 1;             // Chu kỳ EMA nhanh
 input int    StartupEmaSlowPeriod = 50;            // Chu kỳ EMA chậm
-input ENUM_TIMEFRAMES StartupEmaCrossTimeframe = PERIOD_M5; // Khung EMA (dùng cho cắt nhanh/chậm và cho xếp 3 EMA)
+input ENUM_TIMEFRAMES StartupEmaCrossTimeframe = PERIOD_M5; // Khung EMA dùng chung cho cắt nhanh/chậm, xếp 3 EMA và EMA(X) của lọc Open-EMA
 input bool   EnableStartupThreeEmaOrdered = false; // Bật: chỉ đặt gốc khi EMA1>EMA2>EMA3 hoặc EMA1<EMA2<EMA3 (chu kỳ nhỏ→vừa→lớn; ưu tiên hơn cắt nhanh/chậm)
 input int    StartupThreeEmaPeriod1 = 9;           // Chu kỳ EMA 1 (nhỏ nhất)
 input int    StartupThreeEmaPeriod2 = 21;          // Chu kỳ EMA 2 (vừa)
 input int    StartupThreeEmaPeriod3 = 50;          // Chu kỳ EMA 3 (lớn nhất)
 input bool   EnableStartupThreeEmaCandleVsEma3 = true; // Bật: nến hiện tại phải cùng phía EMA3 theo chiều xếp EMA
+input bool   EnableStartupOpenGapToEmaLimit = false; // Bật: chỉ đặt gốc khi |Open nến hiện tại - EMA(X)| <= ngưỡng pip
+input int    StartupOpenGapToEmaPeriod = 50;       // Chu kỳ EMA(X) để đo khoảng cách Open nến hiện tại (dùng chung StartupEmaCrossTimeframe)
+input double StartupOpenGapToEmaMaxPips = 50.0;    // Ngưỡng khoảng cách tối đa cho phép (pip)
 
 input group "━━ 2F) KHỞI ĐỘNG THEO RSI ━━"
 input bool   EnableStartupRsiBaseFilter = false;   // Chỉ đặt gốc khi RSI cắt mức (khi chưa có gốc)
 input ENUM_TIMEFRAMES StartupRsiTimeframe = PERIOD_M5; // Khung RSI
 input int    StartupRsiPeriod = 14;                // Chu kỳ RSI
-input double StartupRsiAboveLevel = 70.0;          // Cắt lên mức (đặt <0 để tắt)
-input double StartupRsiBelowLevel = 30.0;          // Cắt xuống mức (đặt <0 để tắt)
+input double StartupRsiAboveLevel = 70.0;          // Cắt lên mức X (đặt <0 để tắt)
+input double StartupRsiBelowLevel = 30.0;          // Cắt xuống mức X1 (đặt <0 để tắt)
+input int    StartupRsiCrossLookbackBars = 0;     // N nến đóng trước nến cắt (shift2…N+1): cắt lên → RSI đều < X; cắt xuống → đều > X1. 0 = chỉ cắt shift2→1 như cũ
+input bool   EnableStartupRsiRecentTouchFilter = false; // Bật: phải có RSI cắt mức tại shift2→1, và trong X nến quá khứ có ít nhất 1 nến RSI > mức cắt lên hoặc RSI < mức cắt xuống
+input int    StartupRsiRecentTouchBars = 10;      // X nến quá khứ để xét đã từng >X hoặc <X1 (>=1)
 
 input group "━━ 2G) AUTO LOT BẬC 1 THEO GỐC-EMA ━━"
 input bool   EnableAutoFirstLotByBaseEmaGap = false; // Nếu |Gốc-EMA| <= ngưỡng thì dùng lot bậc 1 auto
@@ -94,7 +102,26 @@ input ENUM_TIMEFRAMES AutoFirstLotByBaseEmaTimeframe = PERIOD_M5; // Khung EMA
 input double AutoFirstLotByBaseEmaMaxGapPips = 50.0; // Ngưỡng |Gốc-EMA| (pip)
 input double AutoFirstLotByBaseEmaLot = 0.02;        // Lot bậc 1 auto
 
-input group "━━ 4) CHỜ ẢO A-F (LOT/TP) ━━"
+input group "━━ 2H) KHỞI ĐỘNG THEO ADX ━━"
+input bool   EnableStartupAdxBaseFilter = false;   // Chỉ đặt gốc khi đủ điều kiện ADX trên X nến đóng (kết hợp 2E/2F); X1/X2 = tắt từng nhánh
+input ENUM_TIMEFRAMES StartupAdxTimeframe = PERIOD_M5; // Khung ADX
+input int    StartupAdxPeriod = 14;              // Chu kỳ ADX (period)
+input int    StartupAdxBarsAboveLevel = 1;       // Số nến đóng gần nhất (shift 1→X): kiểm tra từng nến (≥1)
+input double StartupAdxGreaterThanLevel = 20.0;  // X1: ADX > X1 trên mỗi nến; đặt ≤0 để tắt điều kiện này
+input double StartupAdxLessThanLevel = 0.0;     // X2: ADX < X2 trên mỗi nến; đặt ≤0 để tắt điều kiện này
+
+input group "━━ 2I) KHỞI ĐỘNG THEO X NẾN LIỀN KỀ CÙNG MÀU ━━"
+input bool   EnableStartupThreeSameColorCandles = false; // Bật: X nến đóng liên tiếp cùng màu; nến đóng ngay trước chuỗi phải khác màu
+input int    StartupSameColorConsecutiveCount = 3;       // X: số nến đóng liên tiếp cùng màu (shift1..X); 1..50 (ngoài khoảng bị giới hạn trong EA)
+input ENUM_TIMEFRAMES StartupThreeSameColorCandlesTimeframe = PERIOD_M5; // Khung thời gian: X+1 nến đóng (shift1..X cùng màu, shift X+1 khác)
+
+input group "━━ 2J) LỌC NẾN ĐÓNG TRƯỚC CHO CHỜ ẢO A-H (AND với 4a–4i) ━━"
+input bool   EnableVirtualGridPrevClosedCandleDirectionFilter = false; // Bật: nến đóng shift1 chặn theo hướng. Mỗi chân vẫn phải Bật ở nhóm 4a–4i; công thức = (chân Bật) AND (nến cho phép hướng đó). Nếu cả 8 chân đều Bật: tăng chỉ Buy A,D,E,H; giảm chỉ Sell B,C,F,G. Bật đồng thời với lọc đóng vs EMA bên dưới → thêm: chỉ đặt gốc khi có ít nhất một chân thỏa cả hai lọc
+input ENUM_TIMEFRAMES VirtualGridPrevClosedCandleTimeframe = PERIOD_CURRENT; // Khung nến đọc shift1 (PERIOD_CURRENT = khung chart EA)
+input bool   EnableVirtualGridPrevClosedVsEmaSideFilter = false; // Bật: đóng shift1 vs EMA (cùng khung) — Close>EMA chỉ Buy ảo trên gốc (A,E); Close<EMA chỉ Sell ảo dưới gốc (B,F); Close=EMA không chặn thêm. AND với 4a–4i và lọc hướng nến 2J (nếu bật). Bật đồng thời lọc hướng nến → thêm: chỉ đặt gốc khi có ít nhất một chân thỏa cả hai lọc
+input int    VirtualGridPrevClosedVsEmaPeriod = 50; // Chu kỳ EMA (≥1; giá đóng & EMA cùng nến shift1)
+
+input group "━━ 4) CHỜ ẢO A-H (LOT/TP) ━━"
 
 input group "━━ 4a. Buy A trên gốc (+) — lot / TP ━━"
 input bool   EnableLegBuyAboveA = true; // Bật/tắt chân 4a: Buy A trên gốc
@@ -156,11 +183,45 @@ input double VGridMaxLotSellBelowF = 3.0;
 input bool   VGridTpNextSellBelowF = false;
 input double VGridTpPipsSellBelowF = 0.0;
 
-input group "━━ 6B) GỒNG LÃI TỔNG ━━"
-input bool   EnableCompoundTotalFloatingProfit = true; // Bật gồng lãi tổng 6b
+input group "━━ 4h. Sell G trên gốc (+) — lot / TP ━━"
+input bool   EnableLegSellAboveG = true; // Bật/tắt chân 4h: Sell G trên gốc
+input double VGridL1SellAboveG = 0.01;
+input ENUM_LOT_SCALE VGridScaleSellAboveG = LOT_FIXED;
+input double VGridLotAddSellAboveG = 0.05;
+input double VGridLotMultSellAboveG = 1.5;
+input double VGridMaxLotSellAboveG = 3.0;
+input bool   VGridTpNextSellAboveG = true;
+input double VGridTpPipsSellAboveG = 0.0;
+
+input group "━━ 4i. Buy H dưới gốc (-) — lot / TP ━━"
+input bool   EnableLegBuyBelowH = true; // Bật/tắt chân 4i: Buy H dưới gốc
+input double VGridL1BuyBelowH = 0.01;
+input ENUM_LOT_SCALE VGridScaleBuyBelowH = LOT_FIXED;
+input double VGridLotAddBuyBelowH = 0.05;
+input double VGridLotMultBuyBelowH = 1.5;
+input double VGridMaxLotBuyBelowH = 3.0;
+input bool   VGridTpNextBuyBelowH = true;
+input double VGridTpPipsBuyBelowH = 0.0;
+
+input group "━━ 4g. Buy E / Sell F — lot L1 khi P/L nổi âm đủ lớn (chờ ảo) ━━"
+input bool   EnableEfFirstLotFromOpenFloatingLoss = false; // Bật: khi đủ float âm (+ tuỳ chọn carry X bên dưới) thì L1 E/F = lot cố định; không khớp → như 4e/4f; không sửa lệnh thực đã khớp
+input double EfFloatingLossTriggerUsd = 3000.0; // Ngưỡng âm: tổng float ≤ −3000 (vd −3000, −3001 USD) → dùng lot L1 auto; đặt ≤0 = không áp công thức
+input double EfFloatingLossFirstLot = 0.5;     // Lot bậc 1 E/F khi đã vượt ngưỡng (vd −3001 USD vẫn 0.5 nếu cài ngưỡng 3000); ≤0 = không áp
+input bool   EnableEfFloatingLossGateByCompoundCarry = false; // Bật: thêm điều kiện carry 6c (phần cộng vào ngưỡng gồng 6b) ≥ X USD
+input double EfFloatingLossMinCompoundCarryUsd = 0.0; // X (USD): GetCompoundCarryContributionUsd() phải ≥ giá trị này; chỉ kiểm khi bật gate phía trên và X > 0
+input double EfFloatingLossCarryMatchedFirstLot = 0.0; // x lot L1 EF khi gate carry (X USD) được thỏa; đặt ≤0 → dùng chung Lot bên float (FirstLot ngay trên)
+
+input group "━━ 6B1) GỒNG LÃI TỔNG STOP ━━"
+input bool   EnableCompoundTotalFloatingProfit = true; // Bật gồng lãi tổng 6b1 (Stop)
 input ENUM_COMPOUND_TRIGGER_PROGRESS_MODE CompoundTriggerProgressMode = COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_TOTAL; // Kiểu tính tiến độ ngưỡng
 input double CompoundTotalProfitTriggerUSD = 20.0; // Ngưỡng kích hoạt (USD)
 input bool   CompoundResetOnCommonSlHit = true; // Chạm SL chung thì reset
+
+input group "━━ 6B2) GỒNG LÃI TỔNG LIMIT ━━"
+input bool   EnableCompoundTotalFloatingProfitLimitReverse = false; // Bật gồng lãi tổng 6b2 (Limit ngược): trên gốc chọn Sell dương nhỏ nhất, dưới gốc chọn Buy dương nhỏ nhất
+input ENUM_COMPOUND_TRIGGER_PROGRESS_MODE CompoundLimitReverseTriggerProgressMode = COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_TOTAL; // Kiểu tính tiến độ ngưỡng cho mode ngược (mirror 6b)
+input double CompoundTotalProfitLimitReverseTriggerUSD = 20.0; // Ngưỡng X (USD) cho mode ngược
+input bool   CompoundLimitReverseResetOnCommonSlHit = true; // Chạm SL chung thì reset (mode ngược)
 
 input group "━━ 6C) CÂN BẰNG LỆNH ━━"
 input bool   EnableOrderBalanceMode = true;        // Bật cân bằng lệnh 6c
@@ -189,7 +250,7 @@ input int    OrderBalanceRSIPeriod = 14;          // Chu kỳ RSI
 input double OrderBalanceRSIGreaterLevel = 70.0;  // RSI > mức thì cho nhánh đóng dưới gốc (đặt <0 để tắt)
 input double OrderBalanceRSILessLevel = 30.0;     // RSI < mức thì cho nhánh đóng trên gốc (đặt <0 để tắt)
 input group "━━ 6C5) CÁCH ĐÓNG LỆNH ━━"
-input bool   EnableOrderBalanceCloseBothSidesPaired = false; // Đóng cặp cả 2 phía khi đủ điều kiện
+input bool   EnableOrderBalanceCloseBothSidesPaired = false; // Thêm: đóng toàn bộ lệnh cùng phía với giá (Buy trên gốc hoặc Sell dưới gốc) từ bậc 1 → bậc |±N| xa nhất trong các lệnh yếu vừa đóng
 input group "━━ 6C6) GIỚI HẠN CARRY 6C -> 6B ━━"
 input bool   EnableOrderBalanceCarryCapPerSession = false; // Bật trần carry mỗi phiên
 input double OrderBalanceCarryCapPerSessionUSD = 2000.0;   // Trần carry mỗi phiên (USD)
@@ -197,7 +258,7 @@ input group "━━ 6C7) CARRY: CHỈ ÂM HOẶC ÂM+RỒI CẢ DƯƠNG ━━"
 input bool   EnableOrderBalanceCarryFullPnLAfterNegUsdAccum = false; // Bật: carry hiện tại > X thì carry tính cả lệnh đóng dương; carry <= X thì chỉ tính lệnh đóng âm
 input double OrderBalanceCarryFullPnLAfterNegativeUsdAccum = 2000.0; // Ngưỡng X (USD) áp trên carry hiện tại; <=0 hoặc tắt 6C7 = chỉ đóng âm như cũ
 
-input group "━━ 6D) RESET THEO ĐIỀU KIỆN PHIÊN ━━"
+input group "━━ 6D) RESET THEO ĐIỀU KIỆN PHIÊN (chỉ khi chưa bật 6b: không trailing / không treo ARM / không chờ bước sau kích hoạt) ━━"
 input bool   EnableSessionDistanceAndTotalProfitReset = false; // Reset khi đạt xa gốc + lãi mở
 input double SessionDistanceResetPips = 500.0; // Xa gốc tối thiểu (pip)
 input double SessionTotalProfitResetUSD = 100.0; // Lãi mở tối thiểu (USD)
@@ -206,16 +267,43 @@ input double SessionOrderBalanceNegativeTriggerUSD = 1000.0; // Ngưỡng âm t�
 input bool   EnableResetWhenReachPrevSessionPeak = false; // Reset khi đạt mốc đỉnh lãi phiên trước
 input bool   EnableSessionOpenPlusClosedProfitReset = false; // Reset khi (mở+đóng) đạt ngưỡng
 input double SessionOpenPlusClosedProfitResetUSD = 1000.0; // Ngưỡng (mở+đóng) (USD)
+input bool   EnableSessionPlAndTotalOpenLotsReset = false; // Reset khi P/L phiên (đã đóng + đang mở) đạt ngưỡng + Σ lot (deal OUT trong phiên + vị thế đang mở) = X
+input double SessionPlLotsResetThresholdUsd = 500.0;       // Ngưỡng P/L (USD): cơ sở = Σ(deal đóng OUT trong phiên) + Σ(profit+swap vị thế mở); dương ≥; âm ≤; 0 = tắt nhánh P/L
+input double SessionPlLotsResetTotalOpenLots = 1.50;       // Tổng lot mục tiêu: Σ VOL deal OUT trong phiên + Σ lot vị thế đang mở (cùng lọc phiên; khớp SYMBOL_VOLUME_STEP)
+input bool   EnableSessionNegativePlHardStopReset = false; // SL phiên: chạm ngưỡng âm → reset; |âm| phiên cộng vào carry → ngưỡng gồng lãi tổng phiên sau = CompoundTotalProfitTriggerUSD + carry (xem HUD)
+input double SessionNegativePlHardStopUsd = 300.0;       // X dương: P/L phiên <= -X thì reset. Ví dụ thực tế -2000 USD → carry +2000 USD vào ngưỡng gồng (cộng thêm vào input ngưỡng). 0=tắt
+input bool   EnableSessionCarryExceededReset = false;   // Từ đầu phiên: carry phiên đạt ≥ X → chỉ reset EA; gồng lãi tổng vẫn chỉ từ carry tổng (cộng dồn)
+input double SessionCarryExceededResetUsd = 5000.0;       // Ngưỡng carry phiên (USD, >0) để reset EA; 0=tắt. Không cộng hai lần vào gồng — carry tổng đã gồm phần trong phiên
+input bool   ResetCarrySessionNegativeAsOneBucket = true; // Bật: khi reset phiên, carry += max(0,−(P/L phiên mở+đóng)); Tắt: += max(0,−đóng)+max(0,−treo) (hai nhánh không triệt tiêu)
+input double ResetCarryMinSessionNegativeUsd = 0.0;       // >0: chỉ cộng phần carry trên khi P/L phiên (mở+đóng) ≤ −X USD; 0 = mọi mức âm đều xét theo bucket trên
 
-input group "━━ 8A) LỊCH CHẠY THEO GIỜ ━━"
-input bool   EnableRunTimeWindow = false;      // Chỉ chạy trong khung giờ
-input int    RunStartHour = 1;                 // Giờ bắt đầu
-input int    RunStartMinute = 0;               // Phút bắt đầu
-input int    RunEndHour = 16;                  // Giờ kết thúc
-input int    RunEndMinute = 0;                 // Phút kết thúc
-input int    StartupRestartDelayMinutes = 0;   // Delay trước khi cho đặt gốc mới (phút)
+input bool   EnableResetWhenPriceOutsideTopBottomGrid = false; // Giá ra ngoài biên ±Max bậc tính từ gốc (Bid > gốc+offset(+Max) hoặc Ask < gốc+offset(−Max); cùng FirstOffset+D như lưới, kể cả khi EA không đặt chờ ảo một phía) → reset EA; carry theo nhóm Reset carry… (tổng P/L phiên = mở thô+đóng, âm bao nhiêu USD thì cộng vào carry)
+input bool   EnableResetWhenVirtualOnlyWrongSideOfPriceVsBase = false; // Chỉ chờ ảo một phía gốc, không vị thế, không lệnh chờ broker EA; giá ngược gốc (theo **đóng nến** khung bên dưới) → reset; carry như reset ngoài lưới
+input ENUM_TIMEFRAMES ResetWhenVirtualWrongSideConfirmBarTimeframe = PERIOD_CURRENT; // Khung xác nhận đóng nến (PERIOD_CURRENT = khung chart EA). Reset chỉ khi nến vừa đóng (shift=1) thỏa giá vs gốc
+input int    ResetWhenVirtualWrongSideMinGridLevelsFromBase = 0; // ≥1: giá hiện tại (Bid phía dưới gốc / Ask phía trên gốc) phải cách gốc ít nhất X bậc theo FirstOffset+D; 0 = không kiểm tra
 
-input group "━━ 8B) LỊCH CHẠY THEO NGÀY ━━"
+input bool   EnableResetWhenNoOpenPosMinGridAndOutsidePrevBody = false; // Bật: reset EA (gốc/lưới/chờ ảo) khi không vị thế mở + max(|Bid−gốc|,|Ask−gốc|) ≥ X bậc + mid ngoài thân nến đóng trước; carry tổng không đổi
+input int    ResetWhenNoOpenPosMinGridLevelsFromBase = 3;       // X bậc (FirstOffset+D như lưới); ≥1 mới kiểm tra xa gốc; 0 = bỏ qua điều kiện khoảng cách
+input ENUM_TIMEFRAMES ResetWhenNoOpenPosPrevCandleBodyTimeframe = PERIOD_CURRENT; // Khung nến trước = nến đóng shift 1; PERIOD_CURRENT = khung chart EA
+
+input group "━━ 8A) LỊCH CHẠY THEO GIỜ (GIỜ SERVER SÀN — TimeCurrent) ━━"
+input bool   EnableRunTimeWindow = false;      // Chỉ chạy trong khung giờ (so với giờ server broker, không phải giờ máy tính)
+input int    RunStartHour = 1;                 // Giờ bắt đầu (0–23, server)
+input int    RunStartMinute = 0;               // Phút bắt đầu (0–59, server)
+input int    RunEndHour = 16;                  // Giờ kết thúc (0–23, server)
+input int    RunEndMinute = 0;                 // Phút kết thúc (0–59, server)
+input int    StartupRestartDelayMinutes = 0;   // Delay trước khi cho đặt gốc mới (phút, đếm theo TimeCurrent server)
+
+input group "━━ 8A2) MỐC 1 — TRÌ HOÃN ĐẶT CHỜ ẢO SAU GỐC ━━"
+input bool   EnableDeferVirtualPendingAfterBase = false; // (1) Bật: trì hoãn đặt chờ ảo sau gốc tới khi đủ các điều kiện đang dùng (0 phút / 0 pip = tắt điều kiện đó; cả hai =0 → không trì hoãn)
+input int    DeferVirtualPendingDelayMinutes = 0;        // (2) Phút chờ sau khi đặt gốc rồi mới được xét chờ ảo (≥0; 0 = không chờ theo thời gian)
+input double DeferVirtualPendingMinDistanceFromBasePips = 10.0; // (3) Khoảng cách tối đa X pip: max(|Bid−gốc|,|Ask−gốc|)/pip ≤ X mới đủ; 0 = không kiểm tra khoảng cách
+
+input group "━━ 8A3) MỐC 2 — ĐỔI GỐC NẾU CHƯA ĐẶT CHỜ ẢO ━━"
+input bool EnableRebaseIfNoVirtualExecWithinMinutes = false; // Bật: từ lúc có đường gốc đếm X phút — có chờ ảo thì bỏ đếm; hết X phút chưa có chờ ảo → reset như reset phiên (delay khởi động/lịch/8D/EMA…), chờ đặt gốc mới
+input int  RebaseIfNoVirtualExecWithinMinutes = 30;          // Số phút từ lúc đặt gốc (0 = tắt). Có vị thế mở phiên hiện tại: gia hạn thêm X phút, không đổi gốc
+
+input group "━━ 8B) LỊCH CHẠY THEO NGÀY (NGÀY SERVER SÀN — TimeCurrent) ━━"
 input bool EnableRunDayFilter = false;         // Bật lọc ngày chạy
 input bool RunOnMonday    = true;              // Thứ 2
 input bool RunOnTuesday   = true;              // Thứ 3
@@ -227,6 +315,10 @@ input bool RunOnSunday    = true;              // Chủ nhật
 
 input group "━━ 8C) TRÁNH TIN USD HIGH IMPACT ━━"
 input bool EnableAvoidUsdHighImpactNews = false; // Hôm nay hoặc ngày mai có tin USD mức cao thì chặn phiên mới
+
+input group "━━ 8D) TẠM DỪNG THEO LỢI NHUẬN NGÀY (CỘNG DỒN PHIÊN) ━━"
+input bool   EnableDailyProfitPauseAfterReset = false; // Bật: mỗi ngày server, chừng chưa đạt ngưỡng thì lãi đóng cộng dồn sang phiên sau trong cùng ngày; đạt ngưỡng → dừng hết ngày đó; sang ngày server mới → đếm lại từ 0 (không cộng dồn qua ngày)
+input double DailyProfitPauseThresholdUSD = 1000.0;    // Ngưỡng tổng lãi đã đóng trong ngày server (USD), magic+symbol chart
 
 input group "━━ 9) THÔNG BÁO ━━"
 input bool EnableResetNotification = true;     // Gửi thông báo MT5
@@ -275,6 +367,12 @@ int MagicAA = 0;                              // Strategy magic (= MagicNumber i
 bool g_runtimeSessionActive = true;           // true: trong lịch chạy (giờ/ngày); false: chờ tới khi lịch cho phép phiên mới
 datetime g_startupDelayUntil = 0;             // Mốc thời gian kết thúc delay khởi động lại EA
 bool g_startupDelayLogged = false;            // Tránh log lặp lại mỗi tick khi đang delay
+datetime g_deferredVirtualGridOrdersAllowedAfter = 0; // 8A2: nếu chờ phút>0 thì TimeCurrent phải ≥ mốc này trước khi xét pip (nếu pip bật)
+bool     g_deferVirtualPendingGateActive = false; // 8A2: true = đang trì hoãn chờ ảo tới khi đủ điều kiện đang bật (phút/pip) hoặc bị hủy gồng/cân bằng
+bool     g_deferVirtReleaseLogged = false;   // 8A2: log một lần khi bắt đầu đặt chờ ảo sau trì hoãn
+bool     g_noVirtExecHadSuccessfulTrigger = false; // 8A3: đã đặt chờ ảo hoặc chờ ảo đã khớp market — không còn theo dõi hết giờ
+datetime g_noVirtExecDeadline = 0;           // 8A3: mốc hết hạn (từ lúc đặt gốc + X phút); 0 = không đếm
+datetime g_resetVwSideLastConfirmBarTime = 0; // Reset “chờ ảo ngược giá/gốc”: iTime khung xác nhận shift0 lần trước; 0 = chưa đồng bộ
 bool g_compoundTotalProfitActive = false;     // Chế độ gồng lãi tổng (nhóm 6b): SL chung, không nạp chờ ảo, SL trượt
 bool g_compoundBuyBasketMode = false;         // true = giá Bid≥gốc: giữ BUY, SL chung buy; false = dưới gốc: giữ SELL
 double g_compoundCommonSlLine = 0.0;          // Giá SL chung (0 = chưa đặt bước đầu); Buy: SL dưới giá; Sell: SL trên giá
@@ -283,10 +381,13 @@ double g_compoundFrozenRefPx = 0.0;           // Tham chiếu khóa lúc kích h
 bool g_compoundActivationBuyBasket = false;   // Hướng bước lưới có lợi khi chờ (Bid≥gốc = buy basket)
 bool g_compoundArmed = false;                 // Đạt ngưỡng treo, chờ giá xác nhận (chưa đóng lệnh / chưa xóa chờ ảo)
 bool g_compoundArmBuyBasket = false;          // Hướng chờ khi armed (đồng nghĩa buyBasket khi xác nhận)
-double g_balanceCompoundCarryUsd = 0.0;       // 6c: cộng vào ngưỡng Σ(profit+swap) mở cho ARM/chờ bước gồng 6b; trừ/xóa khi bật trượt SL gồng tổng (sau chờ bước lưới) / hết gồng / đóng hết EA
+bool g_compoundUseLimitReverseMode = false;   // true khi vòng đời ARM/chờ bước/active đang chạy theo mode limit ngược
+double g_balanceCompoundCarryUsd = 0.0;       // Carry tổng: cộng dồn mọi biến động (theo phiên thực chất vào một số duy nhất); đóng góp GetCompoundFloatingTriggerThresholdUsd (input + carry, trần 6c). Gán: CompoundCarryUsdSetTotal.
+double g_carryTotalUsdAtGridSessionStart = 0.0; // Mốc carry tổng lúc bắt đầu phiên lưới — carry phiên = carry tổng hiện tại − mốc; chỉ để điều kiện reset EA (6h), không cộng thêm vào gồng riêng
 double g_compoundSessionClosedNegativeProfitSwapUsd = 0.0; // 6b: Σ phần đóng âm (profit+swap) các deal OUT trong phiên hiện tại (magic+symbol), không commission
 double g_compoundSessionClosedTpProfitSwapUsd = 0.0;       // 6b: Σ(profit+swap) các deal OUT có DEAL_REASON_TP trong phiên hiện tại (magic+symbol), không commission
 double g_compoundSessionClosedTotalProfitSwapUsd = 0.0;    // 6b: Σ(profit+swap) toàn bộ deal OUT trong phiên hiện tại (magic+symbol), không commission
+double g_compoundSessionClosedOutVolumeLots = 0.0;          // 6f: Σ khối lượng (lot) các deal OUT trong phiên hiện tại (cùng lọc thời gian phiên)
 double g_sessionMaxAbsDistanceFromBasePips = 0.0;          // 6d: khoảng cách tuyệt đối lớn nhất giá (Bid/Ask) so với gốc trong phiên hiện tại
 double g_orderBalanceSessionClosedNegativeUsd = 0.0;       // 6d: tổng âm tích lũy do nhánh cân bằng 6c đã đóng trong phiên (profit+swap, số âm)
 datetime g_orderBalAboveSideSince = 0;        // 6c: Bid liên tục phía trên gốc (chưa xuống vùng cấm)
@@ -299,6 +400,7 @@ int    g_orderBalanceRsiHandle = INVALID_HANDLE; // iRSI khi bật lọc RSI câ
 int    g_orderBalanceFastEmaHandle = INVALID_HANDLE; // iMA EMA nhanh cho lọc nhanh/chậm cân bằng (6c)
 int    g_orderBalanceSlowEmaHandle = INVALID_HANDLE; // iMA EMA chậm cho lọc nhanh/chậm cân bằng (6c)
 int    g_initBaseEmaVirtGapHandle = INVALID_HANDLE; // iMA nhóm 2d: vùng cấm chờ ảo theo khoảng gốc−EMA lúc Init lưới
+int    g_virtualGridPrevCloseEmaHandle = INVALID_HANDLE; // 2J: iMA — đóng shift1 vs EMA (chỉ Buy trên gốc / chỉ Sell dưới gốc)
 bool   g_initBaseEmaVirtGapActive = false;    // 2d: vùng cấm theo gốc đã chụp; giữ cố định tới đổi gốc hoặc reset EA
 double g_initBaseEmaVirtSnapBase = 0.0;       // 2d: gốc tại lúc chụp (đoạn gốc–EMA)
 double g_initBaseEmaVirtSnapEma = 0.0;        // 2d: giá EMA tại lúc chụp (buffer shift 0)
@@ -315,7 +417,9 @@ int    g_startupEmaSlowHandle = INVALID_HANDLE; // 2e: EMA chậm
 int    g_startupThreeEma1Handle = INVALID_HANDLE; // 2e: EMA chu kỳ nhỏ nhất (xếp 3 đường)
 int    g_startupThreeEma2Handle = INVALID_HANDLE; // 2e: EMA chu kỳ vừa
 int    g_startupThreeEma3Handle = INVALID_HANDLE; // 2e: EMA chu kỳ lớn nhất
+int    g_startupOpenGapEmaHandle = INVALID_HANDLE; // 2e: EMA(X) để giới hạn khoảng cách Open nến hiện tại
 int    g_startupRsiHandle = INVALID_HANDLE;     // 2f: RSI cho lọc khởi động đặt gốc
+int    g_startupAdxHandle = INVALID_HANDLE;     // 2h: ADX cho lọc khởi động đặt gốc
 string g_baseLineObjectName = "VPGrid_BaseLine";
 #define VDGRID_EA_START_VLINE "VDG_EAStart_V"
 #define VDGRID_EA_START_TEXT "VDG_EAStart_T"
@@ -330,6 +434,8 @@ long     g_newsAvoidCachedDateKey = 0;         // cache theo ngày server cho tr
 bool     g_newsAvoidHasUsdHighImpactToday = false;
 long     g_newsAvoidLoggedBlockedDateKey = 0;  // tránh log lặp khi bị chặn bởi tin
 long     g_newsAvoidLoggedCalendarErrDateKey = 0; // tránh log lỗi lịch lặp theo ngày
+long     g_dailyProfitPauseDateKey = 0;        // ngày server đang bị khóa bởi chốt lời ngày (0 = không khóa)
+long     g_dailyProfitPauseLoggedDateKey = 0;  // tránh log lặp khi đang khóa theo lợi nhuận ngày
 //--- Sau khi chờ ảo khớp market: chặn bổ sung lại chờ ảo cùng phía/mức cho tới khi vị thế hiện hoặc hết hạn
 #define VPGRID_VIRTUAL_EXEC_COOLDOWN_SEC 5
 struct VirtualExecCooldownEntry
@@ -360,10 +466,23 @@ void CompoundResetAfterCommonSlHit();
 void ResetAfterSessionDistanceAndTotalProfitHit(const double totalSessionProfitSwapUsd);
 void ResetAfterSessionOpenPlusClosedProfitHit(const double totalSessionProfitSwapUsd);
 void ResetAfterPrevSessionPeakReached(const double targetUsd, const double currentTevUsd);
+void ResetAfterSessionPlAndTotalOpenLotsHit(const double totalSessionProfitSwapUsd,
+                                            const double sessionOpenLotsSum, const double sessionClosedOutLotsSum);
+void ResetAfterSessionNegativePlHardStopHit(const double totalSessionProfitSwapUsd);
+void ResetAfterSessionCarryExceedsThresholdHit();
+void ResetAfterPriceOutsideTopBottomGridHit(const double totalSessionProfitSwapUsd);
+void ResetAfterVirtualPendingsWrongSideOfBaseHit(const double totalSessionProfitSwapUsd);
+void ResetAfterNoOpenPosMinGridOutsidePrevBodyHit(const double totalSessionProfitSwapUsd);
+bool PriceMidStrictlyOutsidePrevClosedBody(const ENUM_TIMEFRAMES candleTf, const double bid, const double ask);
 double GridPriceTolerance();
 void OrderBalanceResetSideDwellState();
 double GetCompoundFloatingTriggerThresholdUsd();
 double GetCompoundCarryContributionUsd();
+void CompoundCarryUsdSetTotal(const double newTotalUsd);
+double SessionLossCarryUsdForEaReset(const double sessionClosedProfitSwapUsd, const double sessionOpenProfitSwapUsd);
+double ComputeSessionLossCarryUsdForReset(const double totalSessionProfitSwapUsd,
+                                          const double snapClosedPnlSwap, const double snapOpenPnlSwap);
+double GetCarryInSessionUsd(void);
 void UpdateBaseLineOnChart();
 void EaStartTimeObjectsApplyOrRemove();
 bool OrderBalanceLastClosedVsEma(int &biasOut);
@@ -371,6 +490,8 @@ bool OrderBalanceFastSlowBias(int &biasOut);
 bool OrderBalanceRsiPass(int &biasOut, double &rsiOut);
 bool ProcessOrderBalanceMode();
 bool IsVirtualGridLegEnabled(const ENUM_VGRID_LEG leg);
+bool VirtualGridPrevClosedDualFiltersAllowBasePlacement();
+void VirtualGridPrevClosedDualFilterMaybeLogWaitingForBase();
 void InitBaseEmaVirtGapClearZone();
 void InitBaseEmaVirtGapSnapshotFromGridInit();
 bool InitBaseEmaVirtGapSuppressesVirtual(const ENUM_ORDER_TYPE orderType, const double priceLevel, const int signedLevelNum);
@@ -381,10 +502,20 @@ bool StartupEmaFastSlowCrossShift0vs1();
 bool StartupEmaAnyFilterWaiting();
 bool StartupEmaBaseConditionPass();
 bool StartupThreeEmaOrderedPassShift0();
+bool StartupOpenGapToEmaPassShift0();
+bool StartupThreeSameColorCandlesPass();
+int  StartupSameColorConsecutiveBarsClamped();
 bool StartupRsiPassForBase(double &rsiOut);
+bool StartupAdxPassForBase(double &adxOut);
+bool StartupRsiAndAdxPassForBase(double &rsiOut, double &adxOut);
+string StartupRsiAdxWaitReasonPhrase();
 datetime ServerDayStart(const datetime t);
 long ServerDateKey(const datetime t);
 bool HasUsdHighImpactNewsPauseWindow(const datetime nowSrv);
+double GetTodayClosedProfitUsd(const datetime nowSrv);
+bool IsDailyProfitPauseActiveNow(const datetime nowSrv);
+bool EnsureDailyProfitPauseIfThresholdExceeded(const datetime nowSrv, const string reasonTag, const bool closeAllFirst);
+bool TryPauseNewSessionAfterResetByDailyProfit(const string resetReasonTag);
 void MonthlyProfitPanelDeleteAll();
 void MonthlyProfitPanelRedrawIfNeeded(const bool force);
 void MonthlyProfitPanelOnInitState();
@@ -393,6 +524,11 @@ void CompoundFloatThrHudDeleteAll();
 void CompoundFloatThrHudUpdate(const bool isEaGridReset);
 void ArmStartupRestartDelay(const string reason);
 bool IsStartupRestartDelayBlocking();
+void ClearDeferVirtualPendingGate();
+void NoVirtExecWatchDisarm();
+bool NoVirtExecHasAnyOurVirtualPending();
+bool NoVirtExecHasOpenSessionPosition();
+void TryRebaseIfNoVirtualExecTimedOut();
 void SendStartupTelegramScreenshot(const string reason);
 
 //+------------------------------------------------------------------+
@@ -436,8 +572,53 @@ string VirtualGridLegCode(const ENUM_VGRID_LEG leg)
       case VGRID_LEG_BUY_BELOW: return "D";
       case VGRID_LEG_BUY_ABOVE_E: return "E";
       case VGRID_LEG_SELL_BELOW_F: return "F";
+      case VGRID_LEG_SELL_ABOVE_G: return "G";
+      case VGRID_LEG_BUY_BELOW_H: return "H";
    }
    return "A";
+}
+
+bool VirtualGridLegIsAboveBaseSide(const ENUM_VGRID_LEG leg)
+{
+   return (leg == VGRID_LEG_BUY_ABOVE || leg == VGRID_LEG_SELL_ABOVE
+        || leg == VGRID_LEG_BUY_ABOVE_E || leg == VGRID_LEG_SELL_ABOVE_G);
+}
+
+void VirtualPendingCountOurMagicByBaseSide(int &aboveCount, int &belowCount)
+{
+   aboveCount = 0;
+   belowCount = 0;
+   for(int i = 0; i < ArraySize(g_virtualPending); i++)
+   {
+      if(!IsOurMagic(g_virtualPending[i].magic))
+         continue;
+      if(VirtualGridLegIsAboveBaseSide(g_virtualPending[i].leg))
+         aboveCount++;
+      else
+         belowCount++;
+   }
+}
+
+bool OurSymbolMagicHasAnyOpenPosition()
+{
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      const ulong t = PositionGetTicket(i);
+      if(t > 0 && PositionIsOurSymbolAndMagic(t))
+         return true;
+   }
+   return false;
+}
+
+bool OurSymbolMagicHasAnyBrokerPendingOrder()
+{
+   for(int i = 0; i < OrdersTotal(); i++)
+   {
+      const ulong t = OrderGetTicket(i);
+      if(t > 0 && OrderIsOurSymbolAndMagic(t))
+         return true;
+   }
+   return false;
 }
 
 string BuildOrderCommentWithLevel(const ENUM_VGRID_LEG leg, const int levelNum)
@@ -453,6 +634,8 @@ bool TryParseLegFromOrderComment(const string cmt, ENUM_VGRID_LEG &legOut)
    if(StringFind(cmt, "|D|") >= 0) { legOut = VGRID_LEG_BUY_BELOW; return true; }
    if(StringFind(cmt, "|E|") >= 0) { legOut = VGRID_LEG_BUY_ABOVE_E; return true; }
    if(StringFind(cmt, "|F|") >= 0) { legOut = VGRID_LEG_SELL_BELOW_F; return true; }
+   if(StringFind(cmt, "|G|") >= 0) { legOut = VGRID_LEG_SELL_ABOVE_G; return true; }
+   if(StringFind(cmt, "|H|") >= 0) { legOut = VGRID_LEG_BUY_BELOW_H; return true; }
    return false;
 }
 
@@ -485,18 +668,121 @@ bool IsLegSellBelowFamily(const ENUM_VGRID_LEG leg)
    return (leg == VGRID_LEG_SELL_BELOW || leg == VGRID_LEG_SELL_BELOW_F);
 }
 
+// Chân vào lệnh Buy chờ ảo: A, D, E, H (còn B,C,F,G là Sell).
+bool IsVirtualGridLegBuyEntryLeg(const ENUM_VGRID_LEG leg)
+{
+   return (leg == VGRID_LEG_BUY_ABOVE || leg == VGRID_LEG_BUY_BELOW
+        || leg == VGRID_LEG_BUY_ABOVE_E || leg == VGRID_LEG_BUY_BELOW_H);
+}
+
+// Nến đóng shift1 trên khung chọn: tăng → chỉ Buy A,D,E,H; giảm → chỉ Sell B,C,F,G; doji → không chặn thêm.
+bool VirtualGridPrevClosedCandleDirectionAllowsLeg(const ENUM_VGRID_LEG leg)
+{
+   if(!EnableVirtualGridPrevClosedCandleDirectionFilter)
+      return true;
+
+   ENUM_TIMEFRAMES tf = VirtualGridPrevClosedCandleTimeframe;
+   if(tf == PERIOD_CURRENT)
+      tf = (ENUM_TIMEFRAMES)Period();
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   if(CopyRates(_Symbol, tf, 1, 1, rates) < 1)
+      return true;
+
+   const double o = rates[0].open;
+   const double c = rates[0].close;
+   if(c > o)
+      return IsVirtualGridLegBuyEntryLeg(leg);
+   if(c < o)
+      return !IsVirtualGridLegBuyEntryLeg(leg);
+   return true;
+}
+
+// Đóng shift1 vs EMA (cùng khung VirtualGridPrevClosedCandleTimeframe): Close>EMA → chỉ Buy trên gốc (A,E); Close<EMA → chỉ Sell dưới gốc (B,F); bằng → không chặn thêm.
+bool VirtualGridPrevClosedVsEmaAllowsLeg(const ENUM_VGRID_LEG leg)
+{
+   if(!EnableVirtualGridPrevClosedVsEmaSideFilter)
+      return true;
+   if(g_virtualGridPrevCloseEmaHandle == INVALID_HANDLE)
+      return true;
+
+   ENUM_TIMEFRAMES tf = VirtualGridPrevClosedCandleTimeframe;
+   if(tf == PERIOD_CURRENT)
+      tf = (ENUM_TIMEFRAMES)Period();
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   if(CopyRates(_Symbol, tf, 1, 1, rates) < 1)
+      return true;
+
+   double emaBuf[];
+   ArraySetAsSeries(emaBuf, true);
+   if(CopyBuffer(g_virtualGridPrevCloseEmaHandle, 0, 1, 1, emaBuf) != 1)
+      return true;
+
+   const double c = rates[0].close;
+   const double ema = emaBuf[0];
+   if(c > ema)
+      return IsVirtualGridLegBuyEntryLeg(leg) && VirtualGridLegIsAboveBaseSide(leg);
+   if(c < ema)
+      return !IsVirtualGridLegBuyEntryLeg(leg) && !VirtualGridLegIsAboveBaseSide(leg);
+   return true;
+}
+
+// Bật chân chờ ảo: (input Bật chân 4a–4i) AND (lọc 2J: hướng nến / đóng vs EMA — nếu bật; không thay thế từng loại lệnh).
 bool IsVirtualGridLegEnabled(const ENUM_VGRID_LEG leg)
 {
+   bool on = false;
    switch(leg)
    {
-      case VGRID_LEG_BUY_ABOVE:    return EnableLegBuyAboveA;
-      case VGRID_LEG_SELL_BELOW:   return EnableLegSellBelowB;
-      case VGRID_LEG_SELL_ABOVE:   return EnableLegSellAboveC;
-      case VGRID_LEG_BUY_BELOW:    return EnableLegBuyBelowD;
-      case VGRID_LEG_BUY_ABOVE_E:  return EnableLegBuyAboveE;
-      case VGRID_LEG_SELL_BELOW_F: return EnableLegSellBelowF;
+      case VGRID_LEG_BUY_ABOVE:    on = EnableLegBuyAboveA; break;
+      case VGRID_LEG_SELL_BELOW:   on = EnableLegSellBelowB; break;
+      case VGRID_LEG_SELL_ABOVE:   on = EnableLegSellAboveC; break;
+      case VGRID_LEG_BUY_BELOW:    on = EnableLegBuyBelowD; break;
+      case VGRID_LEG_BUY_ABOVE_E:  on = EnableLegBuyAboveE; break;
+      case VGRID_LEG_SELL_BELOW_F: on = EnableLegSellBelowF; break;
+      case VGRID_LEG_SELL_ABOVE_G: on = EnableLegSellAboveG; break;
+      case VGRID_LEG_BUY_BELOW_H:  on = EnableLegBuyBelowH; break;
+      default: return true;
    }
-   return true;
+   if(!on)
+      return false;
+   if(!VirtualGridPrevClosedCandleDirectionAllowsLeg(leg))
+      return false;
+   return VirtualGridPrevClosedVsEmaAllowsLeg(leg);
+}
+
+// 2J: bật đồng thời lọc hướng nến + đóng vs EMA → chỉ đặt gốc khi có ít nhất một chân A–H (đã Bật 4a–4i) thỏa cả hai; vào chờ ảo vẫn kiểm từng chân qua IsVirtualGridLegEnabled.
+bool VirtualGridPrevClosedDualFiltersAllowBasePlacement()
+{
+   if(!EnableVirtualGridPrevClosedCandleDirectionFilter || !EnableVirtualGridPrevClosedVsEmaSideFilter)
+      return true;
+
+   static const ENUM_VGRID_LEG kAllVirtLegs[8] =
+   {
+      VGRID_LEG_BUY_ABOVE, VGRID_LEG_SELL_BELOW, VGRID_LEG_SELL_ABOVE, VGRID_LEG_BUY_BELOW,
+      VGRID_LEG_BUY_ABOVE_E, VGRID_LEG_SELL_BELOW_F, VGRID_LEG_SELL_ABOVE_G, VGRID_LEG_BUY_BELOW_H
+   };
+   for(int i = 0; i < 8; i++)
+   {
+      if(IsVirtualGridLegEnabled(kAllVirtLegs[i]))
+         return true;
+   }
+   return false;
+}
+
+void VirtualGridPrevClosedDualFilterMaybeLogWaitingForBase()
+{
+   static ulong s_lastMs = 0;
+   const ulong now = GetTickCount64();
+   if(now - s_lastMs < 60000)
+      return;
+   s_lastMs = now;
+   ENUM_TIMEFRAMES tf = VirtualGridPrevClosedCandleTimeframe;
+   if(tf == PERIOD_CURRENT)
+      tf = (ENUM_TIMEFRAMES)_Period;
+   Print("VDualGrid: 2J — bật cả lọc hướng nến và đóng vs EMA; chưa có chân chờ ảo nào thỏa đồng thời cả hai — chờ nến shift1 khung ", EnumToString(tf), " (đặt gốc / khởi động phiên).");
 }
 
 //+------------------------------------------------------------------+
@@ -614,6 +900,136 @@ bool IsStartupRestartDelayBlocking()
 }
 
 //+------------------------------------------------------------------+
+//| 8A2: tắt trì hoãn chờ ảo (sau khi đủ điều kiện, hoặc khi gồng/cân bằng cần nạp chờ ảo ngay). |
+//+------------------------------------------------------------------+
+void ClearDeferVirtualPendingGate()
+{
+   g_deferVirtualPendingGateActive = false;
+   g_deferredVirtualGridOrdersAllowedAfter = 0;
+   g_deferVirtReleaseLogged = false;
+}
+
+//+------------------------------------------------------------------+
+//| 8A3: tắt theo dõi “hết phút chưa đặt chờ ảo” (gồng / cân bằng / reset có chủ đích). |
+//+------------------------------------------------------------------+
+void NoVirtExecWatchDisarm()
+{
+   g_noVirtExecHadSuccessfulTrigger = false;
+   g_noVirtExecDeadline = 0;
+}
+
+//+------------------------------------------------------------------+
+//| 8A3: còn ít nhất một chờ ảo của EA trên sổ nội bộ.                 |
+//+------------------------------------------------------------------+
+bool NoVirtExecHasAnyOurVirtualPending()
+{
+   for(int i = 0; i < ArraySize(g_virtualPending); i++)
+   {
+      if(IsOurMagic(g_virtualPending[i].magic))
+         return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| 8A3: có vị thế mở (magic+symbol) từ đầu phiên lưới hiện tại hay không. |
+//+------------------------------------------------------------------+
+bool NoVirtExecHasOpenSessionPosition()
+{
+   if(sessionStartTime <= 0)
+      return false;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      const ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket))
+         continue;
+      if(!PositionIsOurSymbolAndMagic(ticket))
+         continue;
+      if((datetime)PositionGetInteger(POSITION_TIME) < sessionStartTime)
+         continue;
+      return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| 8A3: hết X phút từ lúc đặt gốc mà chưa có chờ ảo nào được đặt → chờ gốc mới. |
+//+------------------------------------------------------------------+
+void TryRebaseIfNoVirtualExecTimedOut()
+{
+   if(!EnableRebaseIfNoVirtualExecWithinMinutes || RebaseIfNoVirtualExecWithinMinutes <= 0)
+      return;
+   if(basePrice <= 0.0 || !g_runtimeSessionActive)
+      return;
+   if(IsStartupRestartDelayBlocking())
+      return;
+   if(g_compoundTotalProfitActive || g_compoundAfterClearWaitGrid)
+      return;
+   if(g_noVirtExecHadSuccessfulTrigger)
+      return;
+   if(g_noVirtExecDeadline > 0 && NoVirtExecHasAnyOurVirtualPending())
+   {
+      g_noVirtExecHadSuccessfulTrigger = true;
+      g_noVirtExecDeadline = 0;
+      return;
+   }
+   if(g_noVirtExecDeadline <= 0 || TimeCurrent() < g_noVirtExecDeadline)
+      return;
+
+   if(NoVirtExecHasOpenSessionPosition())
+   {
+      g_noVirtExecDeadline = TimeCurrent() + (datetime)(RebaseIfNoVirtualExecWithinMinutes * 60);
+      return;
+   }
+
+   Print("VDualGrid: 8A3 — Hết ", IntegerToString(RebaseIfNoVirtualExecWithinMinutes),
+         " phút kể từ đặt gốc, EA chưa đặt chờ ảo nào → reset phiên như các nhánh reset khác, chờ điều kiện đặt gốc mới.");
+   if(EnableResetNotification)
+      SendResetNotification("8A3: chưa đặt chờ ảo trong X phút — reset, chờ đặt gốc mới");
+
+   ArmStartupRestartDelay("Reset 8A3 chưa đặt chờ ảo");
+   CompoundFloatThrHudUpdate(false);
+
+   const bool dailyPause = TryPauseNewSessionAfterResetByDailyProfit("Reset 8A3");
+
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   ClearDeferVirtualPendingGate();
+   NoVirtExecWatchDisarm();
+   OrderBalanceResetSideDwellState();
+   InitBaseEmaVirtGapClearZone();
+   AutoFirstLotByBaseEmaClearState();
+
+   if(dailyPause)
+   {
+      CompoundFloatThrHudUpdate(false);
+      UpdateBaseLineOnChart();
+      return;
+   }
+
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
+   {
+      Print("VDualGrid: 8A3 — ngoài lịch chạy (giờ/ngày), EA chờ tới khi được phép phiên mới.");
+      if(EnableResetNotification)
+         SendResetNotification("8A3: reset — ngoài lịch chạy");
+      CompoundFloatThrHudUpdate(false);
+      UpdateBaseLineOnChart();
+      return;
+   }
+
+   Print("VDualGrid: 8A3 — chờ đủ điều kiện input (giờ/ngày/news, EMA/RSI nếu bật) để đặt gốc mới.");
+   if(EnableResetNotification)
+      SendResetNotification("8A3: chờ đủ điều kiện input để đặt gốc mới");
+
+   CompoundFloatThrHudUpdate(false);
+   UpdateBaseLineOnChart();
+}
+
+//+------------------------------------------------------------------+
 //| Vị thế mở trong phiên lưới (cùng quy tắc đếm P/L phiên).           |
 //+------------------------------------------------------------------+
 bool CompoundPositionPassesSessionFilter(const ulong ticket)
@@ -634,7 +1050,8 @@ void CompoundModeClearState()
    g_compoundFrozenRefPx = 0.0;
    g_compoundArmed = false;
    g_compoundArmBuyBasket = false;
-   g_balanceCompoundCarryUsd = 0.0;
+   g_compoundUseLimitReverseMode = false;
+   CompoundCarryUsdSetTotal(0.0);
    OrderBalanceResetSideDwellState();
    CompoundFloatThrHudUpdate(false);
 }
@@ -649,11 +1066,54 @@ double GetCompoundFloatingTriggerThresholdUsd()
 
 double GetCompoundCarryContributionUsd()
 {
-   double carryUsd = MathMax(0.0, g_balanceCompoundCarryUsd);
+   double carryUsd = g_balanceCompoundCarryUsd;
    const double carryCapUsd = MathMax(0.0, OrderBalanceCarryCapPerSessionUSD);
    if(carryUsd > 0.0 && EnableOrderBalanceCarryCapPerSession && carryCapUsd > 0.0)
       carryUsd = MathMin(carryUsd, carryCapUsd);
    return carryUsd;
+}
+
+//+------------------------------------------------------------------+
+//| Gán carry tổng → đóng góp ngưỡng gồng (cộng dồn). Carry phiên =   |
+//| hiện tại − g_carryTotalUsdAtGridSessionStart; chỉ xét reset EA 6h. |
+//+------------------------------------------------------------------+
+void CompoundCarryUsdSetTotal(const double newTotalUsd)
+{
+   g_balanceCompoundCarryUsd = newTotalUsd;
+}
+
+//+------------------------------------------------------------------+
+//| Cộng vào carry sau reset: phần âm của P/L đã đóng trong phiên +   |
+//| phần âm float (lệnh EA sẽ đóng khi reset). Mỗi nhánh tính riêng.  |
+//| Gọi trước CloseAllPositionsAndOrders; snapClosed = g_compoundSession… |
+//| snapOpen = tổng P/L phiên (mở+đóng) truyền vào − snapClosed.       |
+//+------------------------------------------------------------------+
+double SessionLossCarryUsdForEaReset(const double sessionClosedProfitSwapUsd, const double sessionOpenProfitSwapUsd)
+{
+   return MathMax(0.0, -sessionClosedProfitSwapUsd) + MathMax(0.0, -sessionOpenProfitSwapUsd);
+}
+
+//+------------------------------------------------------------------+
+//| Carry cộng khi reset phiên: theo P/L mở+đóng (profit+swap).         |
+//| One-bucket: += max(0,−tổng). Tách: += SessionLossCarryUsdForEaReset. |
+//| MinSessionNegativeUsd>0: chỉ cộng khi tổng ≤ −X (âm đủ sâu).       |
+//+------------------------------------------------------------------+
+double ComputeSessionLossCarryUsdForReset(const double totalSessionProfitSwapUsd,
+                                          const double snapClosedPnlSwap, const double snapOpenPnlSwap)
+{
+   if(ResetCarryMinSessionNegativeUsd > 0.0
+      && totalSessionProfitSwapUsd > -ResetCarryMinSessionNegativeUsd)
+      return 0.0;
+   if(ResetCarrySessionNegativeAsOneBucket)
+      return MathMax(0.0, -totalSessionProfitSwapUsd);
+   return SessionLossCarryUsdForEaReset(snapClosedPnlSwap, snapOpenPnlSwap);
+}
+
+double GetCarryInSessionUsd(void)
+{
+   if(sessionStartTime <= 0)
+      return 0.0;
+   return g_balanceCompoundCarryUsd - g_carryTotalUsdAtGridSessionStart;
 }
 
 #define COMPOUND_FLOAT_THR_HUD_PREFIX "VDG_CMPFTHR_"
@@ -703,12 +1163,14 @@ void CompoundFloatThrHudUpdate(const bool isEaGridReset)
 {
    static string s_snapL1 = "";
    static string s_snapL2 = "";
+   static string s_snapL3 = "";
    static bool s_snapValid = false;
 
    const ENUM_BASE_CORNER crn = CORNER_RIGHT_UPPER;
    const int x = 14;
    const int y1 = 22;
    const int y2 = 38;
+   const int y3 = 54;
    const color C_MUTED = C'140,145,158';
    const color C_BLUE = C'60,150,255';
 
@@ -729,20 +1191,29 @@ void CompoundFloatThrHudUpdate(const bool isEaGridReset)
    if(!g_runtimeSessionActive)
       line2 += "  |  Lịch: chờ phiên";
 
-   if(!isEaGridReset && s_snapValid && line1 == s_snapL1 && line2 == s_snapL2)
+   const string line3 = "Carry tổng (cộng dồn các phiên → ngưỡng gồng): " + DoubleToString(g_balanceCompoundCarryUsd, 2)
+                    + " " + AccountInfoString(ACCOUNT_CURRENCY)
+                    + "  |  Carry phiên (từ đầu phiên, đủ ngưỡng → reset EA 6h): " + DoubleToString(GetCarryInSessionUsd(), 2)
+                    + " " + AccountInfoString(ACCOUNT_CURRENCY);
+
+   if(!isEaGridReset && s_snapValid && line1 == s_snapL1 && line2 == s_snapL2 && line3 == s_snapL3)
       return;
    s_snapValid = true;
    s_snapL1 = line1;
    s_snapL2 = line2;
+   s_snapL3 = line3;
 
    CompoundFloatThrHudLabelSet(COMPOUND_FLOAT_THR_HUD_PREFIX "L1", x, y1, line1, 9, C_BLUE, true, crn);
    CompoundFloatThrHudLabelSet(COMPOUND_FLOAT_THR_HUD_PREFIX "L2", x, y2, line2, 8, C_MUTED, false, crn);
+   CompoundFloatThrHudLabelSet(COMPOUND_FLOAT_THR_HUD_PREFIX "L3", x, y3, line3, 7, C_MUTED, false, crn);
    ChartRedraw(0);
 }
 
 double GetCompoundOpenProfitSwapContribution(const ulong ticket)
 {
    if(ticket <= 0 || !PositionSelectByTicket(ticket))
+      return 0.0;
+   if(!PositionIsOurSymbolAndMagic(ticket))
       return 0.0;
 
    const double posProfitSwap = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
@@ -766,6 +1237,73 @@ double GetCompoundTriggerProgressUsd(const double totalOpenProfitSwapUsd)
    if(CompoundTriggerProgressMode == COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_NEGATIVE)
       return totalOpenProfitSwapUsd + g_compoundSessionClosedNegativeProfitSwapUsd + g_compoundSessionClosedTpProfitSwapUsd;
    return totalOpenProfitSwapUsd;
+}
+
+double GetCompoundTriggerProgressUsdByMode(const double totalOpenProfitSwapUsd, const bool useLimitReverseMode)
+{
+   const ENUM_COMPOUND_TRIGGER_PROGRESS_MODE mode = (useLimitReverseMode
+                                                      ? CompoundLimitReverseTriggerProgressMode
+                                                      : CompoundTriggerProgressMode);
+   if(mode == COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_TOTAL)
+      return totalOpenProfitSwapUsd + g_compoundSessionClosedTotalProfitSwapUsd;
+   if(mode == COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_NEGATIVE)
+      return totalOpenProfitSwapUsd + g_compoundSessionClosedNegativeProfitSwapUsd + g_compoundSessionClosedTpProfitSwapUsd;
+   return totalOpenProfitSwapUsd;
+}
+
+double GetCompoundFloatingTriggerThresholdUsdByMode(const bool useLimitReverseMode)
+{
+   const double baseTrig = (useLimitReverseMode ? CompoundTotalProfitLimitReverseTriggerUSD : CompoundTotalProfitTriggerUSD);
+   return baseTrig + GetCompoundCarryContributionUsd();
+}
+
+// Mode limit ngược: trên gốc dùng SELL dương nhỏ nhất; dưới gốc dùng BUY dương nhỏ nhất.
+bool CompoundEvaluateDeferredBasketLimitReverse(bool &buyBasketOut, double &refPxOut)
+{
+   buyBasketOut = false;
+   refPxOut = 0.0;
+   if(basePrice <= 0.0)
+      return false;
+
+   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   const bool isAboveBase = (bid >= basePrice);
+   buyBasketOut = !isAboveBase; // Trên gốc -> giữ SELL (false); dưới gốc -> giữ BUY (true)
+
+   bool haveRef = false;
+   double minPositiveProfit = DBL_MAX;
+   for(int k = 0; k < PositionsTotal(); k++)
+   {
+      const ulong ticket = PositionGetTicket(k);
+      if(!PositionIsOurSymbolAndMagic(ticket))
+         continue;
+      if(!CompoundPositionPassesSessionFilter(ticket))
+         continue;
+
+      const ENUM_POSITION_TYPE ptp = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      const double op = PositionGetDouble(POSITION_PRICE_OPEN);
+      const double ps = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      if(ps <= 0.0)
+         continue;
+
+      if(isAboveBase)
+      {
+         if(ptp != POSITION_TYPE_SELL || op <= basePrice)
+            continue;
+      }
+      else
+      {
+         if(ptp != POSITION_TYPE_BUY || op >= basePrice)
+            continue;
+      }
+
+      if(!haveRef || ps < minPositiveProfit)
+      {
+         minPositiveProfit = ps;
+         refPxOut = op;
+         haveRef = true;
+      }
+   }
+   return haveRef;
 }
 
 //+------------------------------------------------------------------+
@@ -872,18 +1410,28 @@ void CompoundApplyCommonSlLineToBasketPositions(const bool buyBasket, const doub
 
       if(ptp == POSITION_TYPE_BUY)
       {
-         newSL = MathMin(lineNorm, openPrice - minDist);
+         if(g_compoundUseLimitReverseMode)
+            newSL = lineNorm;
+         else
+            newSL = MathMax(lineNorm, openPrice + minDist);
          newSL = NormalizeDouble(newSL, dgt);
-         if(newSL <= 0.0 || newSL >= openPrice || newSL >= bid)
+         if(newSL <= 0.0 || newSL >= bid - minDist)
+            continue;
+         if(!g_compoundUseLimitReverseMode && newSL <= openPrice)
             continue;
          if(curSL > 0.0 && newSL <= curSL + pt)
             continue;
       }
       else
       {
-         newSL = MathMax(lineNorm, openPrice + minDist);
+         if(g_compoundUseLimitReverseMode)
+            newSL = lineNorm;
+         else
+            newSL = MathMin(lineNorm, openPrice - minDist);
          newSL = NormalizeDouble(newSL, dgt);
-         if(newSL <= 0.0 || newSL <= openPrice || newSL <= ask)
+         if(newSL <= 0.0 || newSL <= ask + minDist)
+            continue;
+         if(!g_compoundUseLimitReverseMode && newSL >= openPrice)
             continue;
          if(curSL > 0.0 && newSL >= curSL - pt)
             continue;
@@ -899,6 +1447,8 @@ void CompoundApplyCommonSlLineToBasketPositions(const bool buyBasket, const doub
 //+------------------------------------------------------------------+
 void CompoundOnActivationConfirmed(const bool buyBasket, const double refPx)
 {
+   ClearDeferVirtualPendingGate();
+   NoVirtExecWatchDisarm();
    // Carry 6c giữ đến khi vào hẳn trượt SL gồng lãi tổng (ProcessCompoundPostActivationGridStepWait),
    // để ngưỡng hiển thị không tụt về gốc input trong lúc chờ bước lưới / hủy pha chờ vẫn còn carry.
    VirtualPendingClear();
@@ -942,6 +1492,8 @@ void ProcessCompoundPostActivationGridStepWait(const double totalOpenProfitSwapU
          g_compoundAfterClearWaitGrid = false;
          g_compoundFrozenRefPx = 0.0;
          Print("VDualGrid: Gồng lãi — giá hồi xuống dưới A 1 bước lưới trước khi vào SL chung → khôi phục chờ ảo.");
+         ClearDeferVirtualPendingGate();
+         NoVirtExecWatchDisarm();
          ManageGridOrders();
          return;
       }
@@ -953,13 +1505,17 @@ void ProcessCompoundPostActivationGridStepWait(const double totalOpenProfitSwapU
          g_compoundAfterClearWaitGrid = false;
          g_compoundFrozenRefPx = 0.0;
          Print("VDualGrid: Gồng lãi — giá hồi lên trên A 1 bước lưới trước khi vào SL chung → khôi phục chờ ảo.");
+         ClearDeferVirtualPendingGate();
+         NoVirtExecWatchDisarm();
          ManageGridOrders();
          return;
       }
    }
 
-   const double triggerProgressUsd = GetCompoundTriggerProgressUsd(totalOpenProfitSwapUsd);
-   if(CompoundTotalProfitTriggerUSD > 0.0 && triggerProgressUsd < GetCompoundFloatingTriggerThresholdUsd())
+   const double modeTriggerUsd = (g_compoundUseLimitReverseMode ? CompoundTotalProfitLimitReverseTriggerUSD : CompoundTotalProfitTriggerUSD);
+   const double modeThresholdUsd = GetCompoundFloatingTriggerThresholdUsdByMode(g_compoundUseLimitReverseMode);
+   const double triggerProgressUsd = GetCompoundTriggerProgressUsdByMode(totalOpenProfitSwapUsd, g_compoundUseLimitReverseMode);
+   if(modeTriggerUsd > 0.0 && triggerProgressUsd < modeThresholdUsd)
    {
       double distFromA = 0.0;
       if(g_compoundActivationBuyBasket)
@@ -971,6 +1527,8 @@ void ProcessCompoundPostActivationGridStepWait(const double totalOpenProfitSwapU
          g_compoundAfterClearWaitGrid = false;
          g_compoundFrozenRefPx = 0.0;
          Print("VDualGrid: Gồng lãi — RESET điểm A khi chờ bước: (tiến độ + carry) < ngưỡng và giá cách A < 1 bước lưới.");
+         ClearDeferVirtualPendingGate();
+         NoVirtExecWatchDisarm();
          ManageGridOrders();
          return;
       }
@@ -1039,45 +1597,52 @@ void ProcessCompoundPostActivationGridStepWait(const double totalOpenProfitSwapU
    {
       const double usedCarryUsd = GetCompoundCarryContributionUsd();
       if(EnableOrderBalanceCarryCapPerSession && OrderBalanceCarryCapPerSessionUSD > 0.0 && g_balanceCompoundCarryUsd > 0.0)
-         g_balanceCompoundCarryUsd = MathMax(0.0, g_balanceCompoundCarryUsd - MathMax(0.0, usedCarryUsd));
+         CompoundCarryUsdSetTotal(MathMax(0.0, g_balanceCompoundCarryUsd - MathMax(0.0, usedCarryUsd)));
       else
-         g_balanceCompoundCarryUsd = 0.0;
+         CompoundCarryUsdSetTotal(0.0);
    }
    CompoundFloatThrHudUpdate(false);
 
-   g_compoundBuyBasketMode = (bid >= basePrice);
+   g_compoundBuyBasketMode = g_compoundActivationBuyBasket;
    g_compoundAfterClearWaitGrid = false;
    g_compoundFrozenRefPx = 0.0;
    g_compoundTotalProfitActive = true;
 
-   Print("VDualGrid: Gồng lãi tổng — SL chung tại tham chiếu, đóng phía xong → bật trượt SL theo bậc. Rổ ",
+   Print("VDualGrid: ", (g_compoundUseLimitReverseMode ? "Gồng lãi tổng LIMIT-ngược" : "Gồng lãi tổng"),
+         " — SL chung tại tham chiếu, đóng phía xong → bật trượt SL theo bậc. Rổ ",
          (g_compoundBuyBasketMode ? "BUY" : "SELL"), ".");
 }
 
 //+------------------------------------------------------------------+
 //| Đạt ngưỡng Σ(profit+swap) lệnh mở: chỉ ARM — chưa đóng lệnh / chưa xóa chờ ảo. |
 //+------------------------------------------------------------------+
-void TryArmCompoundTotalProfitMode()
+void TryArmCompoundTotalProfitMode(const bool useLimitReverseMode, const double triggerUsd)
 {
    if(g_compoundTotalProfitActive || g_compoundArmed || g_compoundAfterClearWaitGrid)
       return;
-   if(!EnableCompoundTotalFloatingProfit || CompoundTotalProfitTriggerUSD <= 0.0)
+   if(triggerUsd <= 0.0)
       return;
    if(basePrice <= 0.0)
       return;
 
-   const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   const bool buyBasket = (bid >= basePrice);
+   bool buyBasket = (SymbolInfoDouble(_Symbol, SYMBOL_BID) >= basePrice);
    double refPx = 0.0;
-   if(!CompoundEvaluateDeferredBasket(buyBasket, refPx))
+   const bool gotRef = (useLimitReverseMode
+                        ? CompoundEvaluateDeferredBasketLimitReverse(buyBasket, refPx)
+                        : CompoundEvaluateDeferredBasket(buyBasket, refPx));
+   if(!gotRef)
    {
       g_compoundFrozenRefPx = 0.0;
-      Print("VDualGrid: Gồng lãi tổng — không tìm được điểm A (bậc dương nhỏ nhất ", (buyBasket ? "BUY trên gốc" : "SELL dưới gốc"), ") — không ARM.");
+      if(useLimitReverseMode)
+         Print("VDualGrid: Gồng lãi tổng LIMIT-ngược — không tìm được điểm A (trên gốc: Sell dương nhỏ nhất / dưới gốc: Buy dương nhỏ nhất) — không ARM.");
+      else
+         Print("VDualGrid: Gồng lãi tổng — không tìm được điểm A (bậc dương nhỏ nhất ", (buyBasket ? "BUY trên gốc" : "SELL dưới gốc"), ") — không ARM.");
       return;
    }
 
    g_compoundArmed = true;
    g_compoundArmBuyBasket = buyBasket;
+   g_compoundUseLimitReverseMode = useLimitReverseMode;
    g_compoundFrozenRefPx = refPx;
    const double step = CompoundModeGridStepPrice();
    const double onePip = OnePipPrice();
@@ -1085,7 +1650,7 @@ void TryArmCompoundTotalProfitMode()
    string carryLog = "";
    if(MathAbs(carryContributionUsd) > 1e-8)
    {
-      carryLog = "; gốc input " + DoubleToString(CompoundTotalProfitTriggerUSD, 2)
+      carryLog = "; gốc input " + DoubleToString(triggerUsd, 2)
                  + " +6c " + DoubleToString(carryContributionUsd, 2);
       if(EnableOrderBalanceCarryCapPerSession && OrderBalanceCarryCapPerSessionUSD > 0.0)
          carryLog += " / max6c " + DoubleToString(OrderBalanceCarryCapPerSessionUSD, 2);
@@ -1097,17 +1662,19 @@ void TryArmCompoundTotalProfitMode()
                      + ", dư " + DoubleToString(g_balanceCompoundCarryUsd - carryContributionUsd, 2) + ")";
       }
    }
-   Print("VDualGrid: Gồng lãi tổng — ARM (chờ đủ giá + đủ ngưỡng). Điểm A=", DoubleToString(refPx, dgt),
+   Print("VDualGrid: ", (useLimitReverseMode ? "Gồng lãi tổng LIMIT-ngược" : "Gồng lãi tổng"),
+         " — ARM (chờ đủ giá + đủ ngưỡng). Điểm A=", DoubleToString(refPx, dgt),
          " | 1 pip=", DoubleToString(onePip, dgt),
          (step > 0.0 ? (" | bước lưới=" + DoubleToString(step, dgt)) : ""),
-         " | ngưỡng=", DoubleToString(GetCompoundFloatingTriggerThresholdUsd(), 2), " USD (",
-         (CompoundTriggerProgressMode == COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_TOTAL
-          ? "Σ mở phiên + Σ đóng toàn phiên"
-          : (CompoundTriggerProgressMode == COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_NEGATIVE
-             ? "Σ mở phiên + Σ đóng âm phiên + Σ đóng TP phiên"
-             : (CompoundTriggerProgressMode == COMPOUND_PROGRESS_OPEN_EXCLUDE_POSITIVE_EF
-                ? "Σ mở phiên (loại lãi dương chân E/F)"
-                : "Σ mở phiên"))),
+         " | ngưỡng=", DoubleToString(GetCompoundFloatingTriggerThresholdUsdByMode(useLimitReverseMode), 2), " USD (",
+         (useLimitReverseMode ? "Σ mở phiên + Σ đóng toàn phiên"
+          : (CompoundTriggerProgressMode == COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_TOTAL
+             ? "Σ mở phiên + Σ đóng toàn phiên"
+             : (CompoundTriggerProgressMode == COMPOUND_PROGRESS_OPEN_PLUS_SESSION_CLOSED_NEGATIVE
+                ? "Σ mở phiên + Σ đóng âm phiên + Σ đóng TP phiên"
+                : (CompoundTriggerProgressMode == COMPOUND_PROGRESS_OPEN_EXCLUDE_POSITIVE_EF
+                   ? "Σ mở phiên (loại lãi dương chân E/F)"
+                   : "Σ mở phiên")))),
          carryLog,
          ")",
          (buyBasket ? " | Đủ giá: (Bid−ref)>1 pip; HỦY: Bid≤ref−1 pip." : " | Đủ giá: (ref−Ask)>1 pip; HỦY: Ask≥ref+1 pip."));
@@ -1122,15 +1689,21 @@ void ProcessCompoundArming(const double totalOpenProfitSwapUsd)
    if(!g_compoundArmed)
       return;
 
-   const bool buyBasket = g_compoundArmBuyBasket;
+   const bool useLimitReverseMode = g_compoundUseLimitReverseMode;
+   const double triggerUsd = (useLimitReverseMode ? CompoundTotalProfitLimitReverseTriggerUSD : CompoundTotalProfitTriggerUSD);
+   bool buyBasket = g_compoundArmBuyBasket;
    double refPx = 0.0;
-   if(!CompoundEvaluateDeferredBasket(buyBasket, refPx))
+   const bool gotRef = (useLimitReverseMode
+                        ? CompoundEvaluateDeferredBasketLimitReverse(buyBasket, refPx)
+                        : CompoundEvaluateDeferredBasket(buyBasket, refPx));
+   if(!gotRef)
    {
       g_compoundArmed = false;
       g_compoundFrozenRefPx = 0.0;
       Print("VDualGrid: Gồng lãi tổng — mất điểm A khi chờ — HỦY ARM (không đóng lệnh).");
       return;
    }
+   g_compoundArmBuyBasket = buyBasket;
    g_compoundFrozenRefPx = refPx;
 
    const double onePip = OnePipPrice();
@@ -1138,12 +1711,11 @@ void ProcessCompoundArming(const double totalOpenProfitSwapUsd)
       return;
    const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   const double compoundFloatThr = GetCompoundFloatingTriggerThresholdUsd();
-   const double triggerProgressUsd = GetCompoundTriggerProgressUsd(totalOpenProfitSwapUsd);
-   const bool floatOk = (CompoundTotalProfitTriggerUSD > 0.0
-                           && triggerProgressUsd >= compoundFloatThr);
+   const double compoundFloatThr = GetCompoundFloatingTriggerThresholdUsdByMode(useLimitReverseMode);
+   const double triggerProgressUsd = GetCompoundTriggerProgressUsdByMode(totalOpenProfitSwapUsd, useLimitReverseMode);
+   const bool floatOk = (triggerUsd > 0.0 && triggerProgressUsd >= compoundFloatThr);
    const double step = CompoundModeGridStepPrice();
-   if(CompoundTotalProfitTriggerUSD > 0.0 && triggerProgressUsd < compoundFloatThr)
+   if(triggerUsd > 0.0 && triggerProgressUsd < compoundFloatThr)
    {
       double distFromA = 0.0;
       if(buyBasket)
@@ -1210,16 +1782,23 @@ void CompoundResetAfterCommonSlHit()
    const double carryBackup = g_balanceCompoundCarryUsd;
    CloseAllPositionsAndOrders();
    if(keepCarryForNextSession)
-      g_balanceCompoundCarryUsd = carryBackup;
+      CompoundCarryUsdSetTotal(carryBackup);
    CompoundFloatThrHudUpdate(false);
 
-   if(!IsSchedulingAllowedForNewSession(TimeCurrent()))
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset sau SL chung"))
    {
-      g_runtimeSessionActive = false;
-      VirtualPendingClear();
-      ArrayResize(gridLevels, 0);
-      sessionStartTime = 0;
-      basePrice = 0.0;
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
+   {
       Print("VDualGrid: Gồng lãi — chạm SL chung, reset ngoài lịch chạy — EA chờ giờ/ngày.");
       if(EnableResetNotification)
          SendResetNotification("Gồng lãi: chạm SL chung — ngoài lịch chạy");
@@ -1227,36 +1806,10 @@ void CompoundResetAfterCommonSlHit()
       return;
    }
 
-   if(StartupEmaAnyFilterWaiting() || EnableStartupRsiBaseFilter)
-   {
-      ArrayResize(gridLevels, 0);
-      sessionStartTime = 0;
-      basePrice = 0.0;
-      Print("VDualGrid: Gồng lãi — chạm SL chung — chờ điều kiện khởi động (EMA/RSI) để đặt gốc mới.");
-      if(EnableResetNotification)
-         SendResetNotification("Gồng lãi: SL chung — chờ điều kiện EMA/RSI đặt gốc");
-      CompoundFloatThrHudUpdate(false);
-      return;
-   }
-
-   if(IsStartupRestartDelayBlocking())
-   {
-      ArrayResize(gridLevels, 0);
-      sessionStartTime = 0;
-      basePrice = 0.0;
-      Print("VDualGrid: Reset sau SL chung — chờ hết delay khởi động lại trước khi đặt gốc mới.");
-      if(EnableResetNotification)
-         SendResetNotification("Reset sau SL chung — chờ delay khởi động lại");
-      CompoundFloatThrHudUpdate(false);
-      return;
-   }
-
-   basePrice = GridBasePriceAtPlacement();
-   InitializeGridLevels();
-   Print("VDualGrid: Gồng lãi — chạm SL chung — đặt gốc mới ngay, base=", DoubleToString(basePrice, dgt));
+   Print("VDualGrid: Gồng lãi — chạm SL chung — chờ đủ điều kiện input (giờ/ngày/news, EMA/RSI nếu bật) để đặt gốc mới.");
    if(EnableResetNotification)
-      SendResetNotification("Gồng lãi: chạm SL chung — lưới mới");
-   ManageGridOrders();
+      SendResetNotification("Gồng lãi: SL chung — chờ đủ điều kiện input để đặt gốc");
+   CompoundFloatThrHudUpdate(false);
 }
 
 //+------------------------------------------------------------------+
@@ -1269,29 +1822,37 @@ void ResetAfterSessionDistanceAndTotalProfitHit(const double totalSessionProfitS
                                          && OrderBalanceCarryCapPerSessionUSD > 0.0
                                          && g_balanceCompoundCarryUsd > 0.0);
    const double carryBackup = g_balanceCompoundCarryUsd;
-   const double sessionLossCarryUsd = MathMax(0.0, -totalSessionProfitSwapUsd);
+   const double snapClosedPnlSwap = g_compoundSessionClosedTotalProfitSwapUsd;
+   const double snapOpenPnlSwap = totalSessionProfitSwapUsd - snapClosedPnlSwap;
+   const double sessionLossCarryUsd = ComputeSessionLossCarryUsdForReset(totalSessionProfitSwapUsd, snapClosedPnlSwap, snapOpenPnlSwap);
    CloseAllPositionsAndOrders();
    double restoredCarryUsd = 0.0;
    if(keepCarryForNextSession)
       restoredCarryUsd += carryBackup;
-   // 6d: nếu tổng phiên (đóng+mở) vẫn âm tại thời điểm reset thì carry âm đó sang phiên sau.
+   // 6d: carry khi reset theo nhóm input Reset carry (tổng phiên âm hoặc tách đóng/treo).
    restoredCarryUsd += sessionLossCarryUsd;
    if(restoredCarryUsd > 0.0)
-      g_balanceCompoundCarryUsd = restoredCarryUsd;
+      CompoundCarryUsdSetTotal(restoredCarryUsd);
    CompoundFloatThrHudUpdate(false);
+
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset 6d"))
+   {
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
 
    const string extra = " | maxDist=" + DoubleToString(g_sessionMaxAbsDistanceFromBasePips, 1)
                      + " pip | tổng P/L phiên=" + DoubleToString(totalSessionProfitSwapUsd, 2)
                      + " USD | carry phiên sau=" + DoubleToString(sessionLossCarryUsd, 2) + " USD";
 
-   if(!IsSchedulingAllowedForNewSession(TimeCurrent()))
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
    {
-      g_runtimeSessionActive = false;
-      VirtualPendingClear();
-      ArrayResize(gridLevels, 0);
-      sessionStartTime = 0;
-      basePrice = 0.0;
-      g_sessionMaxAbsDistanceFromBasePips = 0.0;
       Print("VDualGrid: Reset 6d — ngoài lịch chạy, EA chờ.", extra);
       if(EnableResetNotification)
          SendResetNotification("Reset 6d: ngoài lịch chạy" + extra);
@@ -1299,25 +1860,10 @@ void ResetAfterSessionDistanceAndTotalProfitHit(const double totalSessionProfitS
       return;
    }
 
-   if(StartupEmaAnyFilterWaiting() || EnableStartupRsiBaseFilter)
-   {
-      ArrayResize(gridLevels, 0);
-      sessionStartTime = 0;
-      basePrice = 0.0;
-      g_sessionMaxAbsDistanceFromBasePips = 0.0;
-      Print("VDualGrid: Reset 6d — chờ điều kiện EMA/RSI để đặt gốc mới.", extra);
-      if(EnableResetNotification)
-         SendResetNotification("Reset 6d: chờ điều kiện EMA/RSI" + extra);
-      CompoundFloatThrHudUpdate(false);
-      return;
-   }
-
-   basePrice = GridBasePriceAtPlacement();
-   InitializeGridLevels();
-   Print("VDualGrid: Reset 6d — đặt gốc mới ngay, base=", DoubleToString(basePrice, dgt), extra);
+   Print("VDualGrid: Reset 6d — chờ đủ điều kiện input (giờ/ngày/news, EMA/RSI nếu bật) để đặt gốc mới.", extra);
    if(EnableResetNotification)
-      SendResetNotification("Reset 6d: đặt gốc mới" + extra);
-   ManageGridOrders();
+      SendResetNotification("Reset 6d: chờ đủ điều kiện input để đặt gốc mới" + extra);
+   CompoundFloatThrHudUpdate(false);
 }
 
 //+------------------------------------------------------------------+
@@ -1330,27 +1876,35 @@ void ResetAfterSessionOpenPlusClosedProfitHit(const double totalSessionProfitSwa
                                          && OrderBalanceCarryCapPerSessionUSD > 0.0
                                          && g_balanceCompoundCarryUsd > 0.0);
    const double carryBackup = g_balanceCompoundCarryUsd;
-   const double sessionLossCarryUsd = MathMax(0.0, -totalSessionProfitSwapUsd);
+   const double snapClosedPnlSwap = g_compoundSessionClosedTotalProfitSwapUsd;
+   const double snapOpenPnlSwap = totalSessionProfitSwapUsd - snapClosedPnlSwap;
+   const double sessionLossCarryUsd = ComputeSessionLossCarryUsdForReset(totalSessionProfitSwapUsd, snapClosedPnlSwap, snapOpenPnlSwap);
    CloseAllPositionsAndOrders();
    double restoredCarryUsd = 0.0;
    if(keepCarryForNextSession)
       restoredCarryUsd += carryBackup;
    restoredCarryUsd += sessionLossCarryUsd;
    if(restoredCarryUsd > 0.0)
-      g_balanceCompoundCarryUsd = restoredCarryUsd;
+      CompoundCarryUsdSetTotal(restoredCarryUsd);
    CompoundFloatThrHudUpdate(false);
+
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset 6e"))
+   {
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
 
    const string extra = " | tổng P/L phiên (mở+đóng)=" + DoubleToString(totalSessionProfitSwapUsd, 2)
                      + " USD | carry phiên sau=" + DoubleToString(sessionLossCarryUsd, 2) + " USD";
 
-   if(!IsSchedulingAllowedForNewSession(TimeCurrent()))
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
    {
-      g_runtimeSessionActive = false;
-      VirtualPendingClear();
-      ArrayResize(gridLevels, 0);
-      sessionStartTime = 0;
-      basePrice = 0.0;
-      g_sessionMaxAbsDistanceFromBasePips = 0.0;
       Print("VDualGrid: Reset 6e — ngoài lịch chạy, EA chờ.", extra);
       if(EnableResetNotification)
          SendResetNotification("Reset 6e: ngoài lịch chạy" + extra);
@@ -1358,25 +1912,338 @@ void ResetAfterSessionOpenPlusClosedProfitHit(const double totalSessionProfitSwa
       return;
    }
 
-   if(StartupEmaAnyFilterWaiting() || EnableStartupRsiBaseFilter)
+   Print("VDualGrid: Reset 6e — chờ đủ điều kiện input (giờ/ngày/news, EMA/RSI nếu bật) để đặt gốc mới.", extra);
+   if(EnableResetNotification)
+      SendResetNotification("Reset 6e: chờ đủ điều kiện input để đặt gốc mới" + extra);
+   CompoundFloatThrHudUpdate(false);
+}
+
+//+------------------------------------------------------------------+
+//| Reset EA khi giá ngoài biên ±Max bậc tính từ gốc (FirstOffset+D). |
+//| Biên không phụ thuộc việc có chờ ảo/lệnh phía dưới hay phía trên. |
+//| Đóng toàn bộ vị thế EA; totalSessionProfitSwapUsd = P/L mở thô+đóng phiên; |
+//| carry += theo nhóm Reset carry… (ComputeSessionLossCarryUsdForReset). |
+//+------------------------------------------------------------------+
+void ResetAfterPriceOutsideTopBottomGridHit(const double totalSessionProfitSwapUsd)
+{
+   ArmStartupRestartDelay("Reset giá ngoài lưới trên/dưới");
+   const bool keepCarryForNextSession = (EnableOrderBalanceCarryCapPerSession
+                                         && OrderBalanceCarryCapPerSessionUSD > 0.0
+                                         && g_balanceCompoundCarryUsd > 0.0);
+   const double carryBackup = g_balanceCompoundCarryUsd;
+   const double snapClosedPnlSwap = g_compoundSessionClosedTotalProfitSwapUsd;
+   const double snapOpenPnlSwap = totalSessionProfitSwapUsd - snapClosedPnlSwap;
+   const double closedLossToCarryUsd = MathMax(0.0, -snapClosedPnlSwap);
+   const double openFloatLossToCarryUsd = MathMax(0.0, -snapOpenPnlSwap);
+   const double sessionLossCarryUsd = ComputeSessionLossCarryUsdForReset(totalSessionProfitSwapUsd, snapClosedPnlSwap, snapOpenPnlSwap);
+   CloseAllPositionsAndOrders();
+   double restoredCarryUsd = 0.0;
+   if(keepCarryForNextSession)
+      restoredCarryUsd += carryBackup;
+   restoredCarryUsd += sessionLossCarryUsd;
+   if(restoredCarryUsd > 0.0)
+      CompoundCarryUsdSetTotal(restoredCarryUsd);
+   CompoundFloatThrHudUpdate(false);
+
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset giá ngoài lưới trên/dưới"))
    {
-      ArrayResize(gridLevels, 0);
-      sessionStartTime = 0;
-      basePrice = 0.0;
-      g_sessionMaxAbsDistanceFromBasePips = 0.0;
-      Print("VDualGrid: Reset 6e — chờ điều kiện EMA/RSI để đặt gốc mới.", extra);
-      if(EnableResetNotification)
-         SendResetNotification("Reset 6e: chờ điều kiện EMA/RSI" + extra);
       CompoundFloatThrHudUpdate(false);
       return;
    }
 
-   basePrice = GridBasePriceAtPlacement();
-   InitializeGridLevels();
-   Print("VDualGrid: Reset 6e — đặt gốc mới ngay, base=", DoubleToString(basePrice, dgt), extra);
+   string extraCarryLine;
+   if(ResetCarrySessionNegativeAsOneBucket)
+      extraCarryLine = " USD | carry += max(0,−P/L phiên)=" + DoubleToString(sessionLossCarryUsd, 2) + " USD";
+   else
+      extraCarryLine = " USD | carry += (đóng âm " + DoubleToString(closedLossToCarryUsd, 2)
+                     + " + treo âm " + DoubleToString(openFloatLossToCarryUsd, 2) + ")="
+                     + DoubleToString(sessionLossCarryUsd, 2) + " USD";
+   const string extra = " | tổng P/L phiên (mở+đóng)=" + DoubleToString(totalSessionProfitSwapUsd, 2) + extraCarryLine;
+
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
+   {
+      Print("VDualGrid: Reset — giá ngoài lưới trên/dưới — ngoài lịch chạy, EA chờ.", extra);
+      if(EnableResetNotification)
+         SendResetNotification("Reset: giá ngoài lưới trên/dưới — ngoài lịch chạy" + extra);
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   Print("VDualGrid: Reset — giá ngoài lưới trên/dưới — chờ đủ điều kiện input (giờ/ngày/news, EMA/RSI nếu bật) để đặt gốc mới.", extra);
    if(EnableResetNotification)
-      SendResetNotification("Reset 6e: đặt gốc mới" + extra);
-   ManageGridOrders();
+      SendResetNotification("Reset: giá ngoài lưới trên/dưới — chờ đủ điều kiện input để đặt gốc mới" + extra);
+   CompoundFloatThrHudUpdate(false);
+}
+
+//+------------------------------------------------------------------+
+//| Reset EA: chỉ chờ ảo một phía gốc, giá ngược gốc (điều kiện đã   |
+//| xác nhận ở tick đầu sau **đóng nến** khung input — Close shift=1). |
+//| Không vị thế / không lệnh chờ broker tại thời điểm gọi. Carry: ComputeSessionLossCarryUsdForReset. |
+//+------------------------------------------------------------------+
+void ResetAfterVirtualPendingsWrongSideOfBaseHit(const double totalSessionProfitSwapUsd)
+{
+   ArmStartupRestartDelay("Reset chờ ảo một phía ngược giá/gốc");
+   const bool keepCarryForNextSession = (EnableOrderBalanceCarryCapPerSession
+                                         && OrderBalanceCarryCapPerSessionUSD > 0.0
+                                         && g_balanceCompoundCarryUsd > 0.0);
+   const double carryBackup = g_balanceCompoundCarryUsd;
+   const double snapClosedPnlSwap = g_compoundSessionClosedTotalProfitSwapUsd;
+   const double snapOpenPnlSwap = totalSessionProfitSwapUsd - snapClosedPnlSwap;
+   const double closedLossToCarryUsd = MathMax(0.0, -snapClosedPnlSwap);
+   const double openFloatLossToCarryUsd = MathMax(0.0, -snapOpenPnlSwap);
+   const double sessionLossCarryUsd = ComputeSessionLossCarryUsdForReset(totalSessionProfitSwapUsd, snapClosedPnlSwap, snapOpenPnlSwap);
+   CloseAllPositionsAndOrders();
+   double restoredCarryUsd = 0.0;
+   if(keepCarryForNextSession)
+      restoredCarryUsd += carryBackup;
+   restoredCarryUsd += sessionLossCarryUsd;
+   if(restoredCarryUsd > 0.0)
+      CompoundCarryUsdSetTotal(restoredCarryUsd);
+   CompoundFloatThrHudUpdate(false);
+
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset chờ ảo một phía ngược giá/gốc"))
+   {
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   string extraCarryLineVw;
+   if(ResetCarrySessionNegativeAsOneBucket)
+      extraCarryLineVw = " USD | carry += max(0,−P/L phiên)=" + DoubleToString(sessionLossCarryUsd, 2) + " USD";
+   else
+      extraCarryLineVw = " USD | carry += (đóng âm " + DoubleToString(closedLossToCarryUsd, 2)
+                     + " + treo âm " + DoubleToString(openFloatLossToCarryUsd, 2) + ")="
+                     + DoubleToString(sessionLossCarryUsd, 2) + " USD";
+   const string extra = " | tổng P/L phiên (mở+đóng)=" + DoubleToString(totalSessionProfitSwapUsd, 2) + extraCarryLineVw;
+
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
+   {
+      Print("VDualGrid: Reset — chờ ảo một phía, giá ngược gốc — ngoài lịch chạy, EA chờ.", extra);
+      if(EnableResetNotification)
+         SendResetNotification("Reset: chờ ảo một phía ngược giá/gốc — ngoài lịch chạy" + extra);
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   Print("VDualGrid: Reset — chờ ảo một phía, giá ngược gốc — chờ đủ điều kiện input (giờ/ngày/news, EMA/RSI nếu bật) để đặt gốc mới.", extra);
+   if(EnableResetNotification)
+      SendResetNotification("Reset: chờ ảo một phía ngược giá/gốc — chờ đủ điều kiện input để đặt gốc mới" + extra);
+   CompoundFloatThrHudUpdate(false);
+}
+
+//+------------------------------------------------------------------+
+//| Reset EA: không vị thế mở; xa gốc ≥ X bậc; mid ngoài thân nến đóng trước. |
+//| Carry tổng không đổi (không cộng P/L phiên; sau đóng lệnh khôi phục như reset 6h). |
+//+------------------------------------------------------------------+
+void ResetAfterNoOpenPosMinGridOutsidePrevBodyHit(const double totalSessionProfitSwapUsd)
+{
+   const double snapCarryKeep = g_balanceCompoundCarryUsd;
+
+   ArmStartupRestartDelay("Reset: không lệnh mở + xa gốc + ngoài thân nến trước");
+   CloseAllPositionsAndOrders();
+   // CloseAllPositionsAndOrders có thể xóa state compound/carry; giữ carry tổng sang phiên lưới sau.
+   CompoundCarryUsdSetTotal(snapCarryKeep);
+   CompoundFloatThrHudUpdate(false);
+
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset không lệnh mở + xa gốc + ngoài thân nến"))
+   {
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   const string extra = " | tổng P/L phiên (mở+đóng)=" + DoubleToString(totalSessionProfitSwapUsd, 2)
+                     + " USD | carry tổng giữ nguyên=" + DoubleToString(snapCarryKeep, 2) + " USD";
+
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
+   {
+      Print("VDualGrid: Reset — không lệnh mở + xa gốc + ngoài thân nến trước — ngoài lịch chạy, EA chờ.", extra);
+      if(EnableResetNotification)
+         SendResetNotification("Reset: không lệnh mở + xa gốc + ngoài thân nến — ngoài lịch chạy" + extra);
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   Print("VDualGrid: Reset — không lệnh mở + xa gốc + ngoài thân nến trước — chờ đủ điều kiện input (giờ/ngày/news, EMA/RSI nếu bật) để đặt gốc mới.", extra);
+   if(EnableResetNotification)
+      SendResetNotification("Reset: không lệnh mở + xa gốc + ngoài thân nến — chờ đủ điều kiện input để đặt gốc mới" + extra);
+   CompoundFloatThrHudUpdate(false);
+}
+
+//+------------------------------------------------------------------+
+//| Reset EA — SL âm phiên (carry): Σ P/L đóng+mở trong phiên <= -X. |
+//+------------------------------------------------------------------+
+void ResetAfterSessionNegativePlHardStopHit(const double totalSessionProfitSwapUsd)
+{
+   ArmStartupRestartDelay("Reset 6g SL âm phiên carry");
+   const bool keepCarryForNextSession = (EnableOrderBalanceCarryCapPerSession
+                                         && OrderBalanceCarryCapPerSessionUSD > 0.0
+                                         && g_balanceCompoundCarryUsd > 0.0);
+   const double carryBackup = g_balanceCompoundCarryUsd;
+   const double snapClosedPnlSwap = g_compoundSessionClosedTotalProfitSwapUsd;
+   const double snapOpenPnlSwap = totalSessionProfitSwapUsd - snapClosedPnlSwap;
+   const double sessionLossCarryUsd = ComputeSessionLossCarryUsdForReset(totalSessionProfitSwapUsd, snapClosedPnlSwap, snapOpenPnlSwap);
+   CloseAllPositionsAndOrders();
+   double restoredCarryUsd = 0.0;
+   if(keepCarryForNextSession)
+      restoredCarryUsd += carryBackup;
+   restoredCarryUsd += sessionLossCarryUsd;
+   if(restoredCarryUsd > 0.0)
+      CompoundCarryUsdSetTotal(restoredCarryUsd);
+   CompoundFloatThrHudUpdate(false);
+
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset 6g SL âm phiên"))
+   {
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   string extra = " | P/L phiên (đóng+mở)=" + DoubleToString(totalSessionProfitSwapUsd, 2)
+                    + " USD ≤ -" + DoubleToString(SessionNegativePlHardStopUsd, 2)
+                    + " | carry cộng ngưỡng gồng +=" + DoubleToString(sessionLossCarryUsd, 2) + " USD";
+   if(EnableCompoundTotalFloatingProfit && CompoundTotalProfitTriggerUSD > 0.0)
+      extra += " | ngưỡng gồng lãi tổng=" + DoubleToString(GetCompoundFloatingTriggerThresholdUsd(), 2)
+               + " (input " + DoubleToString(CompoundTotalProfitTriggerUSD, 2) + " + carry "
+               + DoubleToString(GetCompoundCarryContributionUsd(), 2) + ")";
+
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
+   {
+      Print("VDualGrid: Reset 6g — SL âm phiên carry — ngoài lịch chạy, EA chờ.", extra);
+      if(EnableResetNotification)
+         SendResetNotification("Reset 6g SL âm phiên: ngoài lịch chạy" + extra);
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   Print("VDualGrid: Reset 6g — SL âm phiên carry — chờ đủ điều kiện input để đặt gốc mới.", extra);
+   if(EnableResetNotification)
+      SendResetNotification("Reset 6g SL âm phiên carry: chờ đủ điều kiện input để đặt gốc mới" + extra);
+   CompoundFloatThrHudUpdate(false);
+}
+
+//+------------------------------------------------------------------+
+//| Reset EA — 6h: carry phiên (từ đầu phiên) đủ ngưỡng → chỉ reset EA.|
+//| Carry tổng không cần “cộng thêm” — đã vào đóng góp ngưỡng gồng.     |
+//+------------------------------------------------------------------+
+void ResetAfterSessionCarryExceedsThresholdHit()
+{
+   const double snapTot0 = g_balanceCompoundCarryUsd;
+   const double snapSess = GetCarryInSessionUsd();
+
+   ArmStartupRestartDelay("Reset 6h carry vượt ngưỡng");
+   CloseAllPositionsAndOrders();
+   // CloseAllPositionsAndOrders → CompoundModeClearState đặt carry = 0; cần giữ carry tổng (đã cộng dồn) sang phiên sau → gồng.
+   CompoundCarryUsdSetTotal(snapTot0);
+   CompoundFloatThrHudUpdate(false);
+
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset 6h carry vượt ngưỡng"))
+   {
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   const double thrUsd = SessionCarryExceededResetUsd;
+   const string extra = " | carry trong phiên=" + DoubleToString(snapSess, 2) + " USD ≥ " + DoubleToString(thrUsd, 2)
+                     + " | carry tổng (đã vào stash gồng)=" + DoubleToString(snapTot0, 2) + " USD";
+
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
+   {
+      Print("VDualGrid: Reset 6h — carry vượt ngưỡng — ngoài lịch chạy, EA chờ.", extra);
+      if(EnableResetNotification)
+         SendResetNotification("Reset 6h carry vượt ngưỡng: ngoài lịch chạy" + extra);
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   Print("VDualGrid: Reset 6h — carry vượt ngưỡng — chờ đủ điều kiện input (giờ/ngày/news, EMA/RSI/ADX nếu bật) để đặt gốc mới.", extra);
+   if(EnableResetNotification)
+      SendResetNotification("Reset 6h carry vượt ngưỡng: chờ đủ điều kiện input để đặt gốc mới" + extra);
+   CompoundFloatThrHudUpdate(false);
+}
+
+//+------------------------------------------------------------------+
+//| Reset EA khi P/L phiên Σ(đóng+mở) + Σ lot Σ(OUT+mở) thỏa 6f.     |
+//+------------------------------------------------------------------+
+void ResetAfterSessionPlAndTotalOpenLotsHit(const double totalSessionProfitSwapUsd,
+                                             const double sessionOpenLotsSum, const double sessionClosedOutLotsSum)
+{
+   ArmStartupRestartDelay("Reset 6f P/L+volum");
+   const bool keepCarryForNextSession = (EnableOrderBalanceCarryCapPerSession
+                                         && OrderBalanceCarryCapPerSessionUSD > 0.0
+                                         && g_balanceCompoundCarryUsd > 0.0);
+   const double carryBackup = g_balanceCompoundCarryUsd;
+   const double snapClosedPnlSwap = g_compoundSessionClosedTotalProfitSwapUsd;
+   const double snapOpenPnlSwap = totalSessionProfitSwapUsd - snapClosedPnlSwap;
+   const double sessionLossCarryUsd = ComputeSessionLossCarryUsdForReset(totalSessionProfitSwapUsd, snapClosedPnlSwap, snapOpenPnlSwap);
+   CloseAllPositionsAndOrders();
+   double restoredCarryUsd = 0.0;
+   if(keepCarryForNextSession)
+      restoredCarryUsd += carryBackup;
+   restoredCarryUsd += sessionLossCarryUsd;
+   if(restoredCarryUsd > 0.0)
+      CompoundCarryUsdSetTotal(restoredCarryUsd);
+   CompoundFloatThrHudUpdate(false);
+
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset 6f"))
+   {
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   const double totalLotsClosedPlusOpen = sessionClosedOutLotsSum + sessionOpenLotsSum;
+   const string extra = " | P/L phiên (đóng+mở)=" + DoubleToString(totalSessionProfitSwapUsd, 2)
+                     + " USD | lot Σ(OUT+mở)=" + DoubleToString(totalLotsClosedPlusOpen, 4)
+                     + " (OUT " + DoubleToString(sessionClosedOutLotsSum, 4) + " + mở " + DoubleToString(sessionOpenLotsSum, 4) + ")"
+                     + " | carry phiên sau=" + DoubleToString(sessionLossCarryUsd, 2) + " USD";
+
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+   g_runtimeSessionActive = IsSchedulingAllowedForNewSession(TimeCurrent());
+   if(!g_runtimeSessionActive)
+   {
+      Print("VDualGrid: Reset 6f — ngoài lịch chạy, EA chờ.", extra);
+      if(EnableResetNotification)
+         SendResetNotification("Reset 6f (P/L+lot đóng+mở): ngoài lịch chạy" + extra);
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
+
+   Print("VDualGrid: Reset 6f — chờ đủ điều kiện input (giờ/ngày/news, EMA/RSI nếu bật) để đặt gốc mới.", extra);
+   if(EnableResetNotification)
+      SendResetNotification("Reset 6f (P/L+lot đóng+mở): chờ đủ điều kiện input để đặt gốc mới" + extra);
+   CompoundFloatThrHudUpdate(false);
 }
 
 //+------------------------------------------------------------------+
@@ -1386,6 +2253,11 @@ void ResetAfterPrevSessionPeakReached(const double targetUsd, const double curre
 {
    ArmStartupRestartDelay("Reset theo đỉnh phiên trước");
    CloseAllPositionsAndOrders();
+   if(TryPauseNewSessionAfterResetByDailyProfit("Reset đỉnh phiên trước"))
+   {
+      CompoundFloatThrHudUpdate(false);
+      return;
+   }
    const string extra = " | mốc lãi đóng phiên trước=" + DoubleToString(targetUsd, 2)
                      + " USD | lãi TEV hiện tại=" + DoubleToString(currentTevUsd, 2) + " USD";
    VirtualPendingClear();
@@ -1431,6 +2303,7 @@ void ProcessCompoundTotalProfitTrailing()
    const double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    const double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    const double touchTol = MathMax(GridPriceTolerance(), pt * 3.0);
+   const double prevCommonSlLine = g_compoundCommonSlLine;
 
    double extOpen = 0.0;
    bool haveExt = false;
@@ -1475,15 +2348,24 @@ void ProcessCompoundTotalProfitTrailing()
 
    if(managed == 0 || !haveExt)
    {
+      if(g_compoundUseLimitReverseMode && g_compoundCommonSlLine > 0.0)
+      {
+         Print("VDualGrid: Gồng lãi LIMIT — không còn vị thế quản lý sau khi đã đặt SL chung, reset EA và reset gốc.");
+         CompoundResetAfterCommonSlHit();
+         return;
+      }
       CompoundModeClearState();
       Print("VDualGrid: Gồng lãi tổng — hết vị thế quản lý, TẮT chế độ.");
+      ClearDeferVirtualPendingGate();
+      NoVirtExecWatchDisarm();
       ManageGridOrders();
       return;
    }
 
    CompoundClearVirtualPendingsIfPriceAboveReference(g_compoundBuyBasketMode, extOpen);
 
-   if(CompoundResetOnCommonSlHit && g_compoundCommonSlLine > 0.0)
+   const bool resetOnCommonSl = (g_compoundUseLimitReverseMode ? true : CompoundResetOnCommonSlHit);
+   if(resetOnCommonSl && g_compoundCommonSlLine > 0.0)
    {
       if(g_compoundBuyBasketMode)
       {
@@ -1545,6 +2427,19 @@ void ProcessCompoundTotalProfitTrailing()
    if(g_compoundCommonSlLine <= 0.0)
       return;
 
+   if(prevCommonSlLine > 0.0 && MathAbs(g_compoundCommonSlLine - prevCommonSlLine) >= step - pt * 0.5)
+   {
+      const int movedSteps = (int)MathRound(MathAbs(g_compoundCommonSlLine - prevCommonSlLine) / step);
+      Print("VDualGrid: Gồng lãi — SL chung dịch theo hướng có lợi ",
+            IntegerToString(MathMax(1, movedSteps)), " bước lưới -> ",
+            DoubleToString(g_compoundCommonSlLine, dgt));
+   }
+   else if(prevCommonSlLine <= 0.0 && g_compoundCommonSlLine > 0.0)
+   {
+      Print("VDualGrid: Gồng lãi — SL chung khởi tạo tại ",
+            DoubleToString(g_compoundCommonSlLine, dgt));
+   }
+
    for(int p = 0; p < PositionsTotal(); p++)
    {
       ulong ticket = PositionGetTicket(p);
@@ -1570,18 +2465,28 @@ void ProcessCompoundTotalProfitTrailing()
 
       if(g_compoundBuyBasketMode)
       {
-         newSL = MathMin(g_compoundCommonSlLine, openPrice - minDist);
+         if(g_compoundUseLimitReverseMode)
+            newSL = g_compoundCommonSlLine;
+         else
+            newSL = MathMax(g_compoundCommonSlLine, openPrice + minDist);
          newSL = NormalizeDouble(newSL, dgt);
-         if(newSL <= 0.0 || newSL >= openPrice)
+         if(newSL <= 0.0 || newSL >= bid - minDist)
+            continue;
+         if(!g_compoundUseLimitReverseMode && newSL <= openPrice)
             continue;
          if(curSL > 0.0 && newSL <= curSL + pt)
             continue;
       }
       else
       {
-         newSL = MathMax(g_compoundCommonSlLine, openPrice + minDist);
+         if(g_compoundUseLimitReverseMode)
+            newSL = g_compoundCommonSlLine;
+         else
+            newSL = MathMin(g_compoundCommonSlLine, openPrice - minDist);
          newSL = NormalizeDouble(newSL, dgt);
-         if(newSL <= 0.0 || newSL <= openPrice)
+         if(newSL <= 0.0 || newSL <= ask + minDist)
+            continue;
+         if(!g_compoundUseLimitReverseMode && newSL >= openPrice)
             continue;
          if(curSL > 0.0 && newSL >= curSL - pt)
             continue;
@@ -1599,6 +2504,7 @@ void VirtualPendingClear()
 {
    ArrayResize(g_virtualPending, 0);
    ArrayResize(g_virtualExecCooldown, 0);
+   g_noVirtExecDeadline = 0;
 }
 
 //+------------------------------------------------------------------+
@@ -2241,67 +3147,66 @@ bool ProcessOrderBalanceMode()
       ulong ticket = PositionGetTicket(j);
       if(ticket <= 0 || !PositionIsOurSymbolAndMagic(ticket))
          continue;
-      ENUM_VGRID_LEG legPos;
       const string posComment = PositionGetString(POSITION_COMMENT);
-      if(!TryParseLegFromOrderComment(posComment, legPos))
-         continue;
       int signedLevel = 0;
       if(!TryParseSignedLevelFromOrderComment(posComment, signedLevel))
-      {
-         if(!FindSignedLevelNumForPrice(PositionGetDouble(POSITION_PRICE_OPEN), signedLevel))
-            continue;
-      }
+         FindSignedLevelNumForPrice(PositionGetDouble(POSITION_PRICE_OPEN), signedLevel);
       const double op = PositionGetDouble(POSITION_PRICE_OPEN);
       const double pnl = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
 
+      const ENUM_POSITION_TYPE ptp = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      const int absLevel = (signedLevel != 0 ? MathAbs(signedLevel) : 0);
+
       if(closeWeakBelow)
       {
-         // Giá trên gốc: phía yếu cần đóng = SELL B/F dưới gốc.
-         if(op < basePrice - baseEps && IsLegSellBelowFamily(legPos))
+         // Giá trên gốc: đóng toàn bộ SELL có giá mở dưới gốc.
+         if(op < basePrice - baseEps && ptp == POSITION_TYPE_SELL)
          {
-            int nWeak = ArraySize(weakTickets);
+            const int nWeak = ArraySize(weakTickets);
             ArrayResize(weakTickets, nWeak + 1);
             ArrayResize(weakPnLs, nWeak + 1);
             ArrayResize(weakLevels, nWeak + 1);
             weakTickets[nWeak] = ticket;
             weakPnLs[nWeak] = pnl;
-            weakLevels[nWeak] = MathAbs(signedLevel);
+            weakLevels[nWeak] = absLevel;
          }
-         // Đóng 2 phía theo cặp: BUY A/E trên gốc, số lượng bằng số lệnh yếu đã chọn đóng.
-         else if(op > basePrice + baseEps && IsLegBuyAboveFamily(legPos))
+         // 6C5: đóng BUY trên gốc cùng bậc |±N| với SELL dưới gốc sẽ đóng.
+         else if(EnableOrderBalanceCloseBothSidesPaired
+                 && op > basePrice + baseEps && ptp == POSITION_TYPE_BUY)
          {
-            int nStrong = ArraySize(strongTickets);
+            const int nStrong = ArraySize(strongTickets);
             ArrayResize(strongTickets, nStrong + 1);
             ArrayResize(strongPnLs, nStrong + 1);
             ArrayResize(strongLevels, nStrong + 1);
             strongTickets[nStrong] = ticket;
             strongPnLs[nStrong] = pnl;
-            strongLevels[nStrong] = MathAbs(signedLevel);
+            strongLevels[nStrong] = absLevel;
          }
       }
       else if(closeWeakAbove)
       {
-         // Giá dưới gốc: phía yếu cần đóng = BUY A/E trên gốc.
-         if(op > basePrice + baseEps && IsLegBuyAboveFamily(legPos))
+         // Giá dưới gốc: đóng toàn bộ BUY có giá mở trên gốc.
+         if(op > basePrice + baseEps && ptp == POSITION_TYPE_BUY)
          {
-            int nWeak = ArraySize(weakTickets);
+            const int nWeak = ArraySize(weakTickets);
             ArrayResize(weakTickets, nWeak + 1);
             ArrayResize(weakPnLs, nWeak + 1);
             ArrayResize(weakLevels, nWeak + 1);
             weakTickets[nWeak] = ticket;
             weakPnLs[nWeak] = pnl;
-            weakLevels[nWeak] = MathAbs(signedLevel);
+            weakLevels[nWeak] = absLevel;
          }
-         // Đóng 2 phía theo cặp: SELL B/F dưới gốc.
-         else if(op < basePrice - baseEps && IsLegSellBelowFamily(legPos))
+         // 6C5: đóng SELL dưới gốc cùng bậc |±N| với BUY trên gốc sẽ đóng.
+         else if(EnableOrderBalanceCloseBothSidesPaired
+                 && op < basePrice - baseEps && ptp == POSITION_TYPE_SELL)
          {
-            int nStrong = ArraySize(strongTickets);
+            const int nStrong = ArraySize(strongTickets);
             ArrayResize(strongTickets, nStrong + 1);
             ArrayResize(strongPnLs, nStrong + 1);
             ArrayResize(strongLevels, nStrong + 1);
             strongTickets[nStrong] = ticket;
             strongPnLs[nStrong] = pnl;
-            strongLevels[nStrong] = MathAbs(signedLevel);
+            strongLevels[nStrong] = absLevel;
          }
       }
    }
@@ -2309,8 +3214,9 @@ bool ProcessOrderBalanceMode()
    const int weakCount = ArraySize(weakTickets);
    if(weakCount < 1)
       return false;
+
    int maxWeakLevel = 0;
-   for(int wl = 0; wl < ArraySize(weakLevels); wl++)
+   for(int wl = 0; wl < weakCount; wl++)
    {
       if(weakLevels[wl] > maxWeakLevel)
          maxWeakLevel = weakLevels[wl];
@@ -2337,12 +3243,12 @@ bool ProcessOrderBalanceMode()
    {
       if(!EnableOrderBalanceCloseBothSidesPaired)
          break;
-      // Chế độ đóng 2 phần: đóng phía mạnh từ gốc đến đúng bậc xa nhất đã đóng ở phía yếu.
-      if(strongLevels[s] > maxWeakLevel)
-         continue;
-      // Phía đối ứng chỉ đóng các lệnh dương (đang có lãi).
-      if(strongPnLs[s] <= 0.0)
-         continue;
+      // 6C5: phía cùng với giá hiện tại — từ gốc (bậc 1) đến bậc |±N| = max bậc yếu đang đóng.
+      if(maxWeakLevel >= 1)
+      {
+         if(strongLevels[s] < 1 || strongLevels[s] > maxWeakLevel)
+            continue;
+      }
       const int n = ArraySize(toClose);
       ArrayResize(toClose, n + 1);
       ArrayResize(toClosePnL, n + 1);
@@ -2387,14 +3293,12 @@ bool ProcessOrderBalanceMode()
    const double totalClosedPnLSwap = weakClosedPnL + strongClosedPnL;
    const double carryThrUsd = MathMax(0.0, OrderBalanceCarryFullPnLAfterNegativeUsdAccum);
    const bool carryGateOn = EnableOrderBalanceCarryFullPnLAfterNegUsdAccum && carryThrUsd > 0.0;
-   const double carryBeforeCloseUsd = MathMax(0.0, g_balanceCompoundCarryUsd);
+   const double carryBeforeCloseUsd = g_balanceCompoundCarryUsd;
    // Ngưỡng động theo carry hiện tại: carry > X thì tính cả dương; carry <= X thì chỉ tính âm.
    const bool carryUseFullClosedPnL = carryGateOn && (carryBeforeCloseUsd > carryThrUsd);
    const double carryDeltaUsd = carryUseFullClosedPnL ? totalClosedPnLSwap : totalClosedNegativePnL;
    // Cộng carry vào ngưỡng gồng 6b theo ΔP/L đóng: mặc định chỉ phần âm; sau ngưỡng 6C7 thì gồm cả đóng dương.
-   g_balanceCompoundCarryUsd -= carryDeltaUsd;
-   if(g_balanceCompoundCarryUsd < 0.0)
-      g_balanceCompoundCarryUsd = 0.0;
+   CompoundCarryUsdSetTotal(g_balanceCompoundCarryUsd - carryDeltaUsd);
    // 6d: lưu tổng âm tích lũy do cân bằng 6c đã đóng trong phiên (USD âm).
    if(totalClosedNegativePnL < 0.0)
       g_orderBalanceSessionClosedNegativeUsd += totalClosedNegativePnL;
@@ -2436,9 +3340,9 @@ bool ProcessOrderBalanceMode()
    string pairedLog = "";
    if(EnableOrderBalanceCloseBothSidesPaired)
    {
-      pairedLog = " | paired 2 phía theo bậc: yếu " + IntegerToString(weakClosed) + " (" + DoubleToString(weakClosedPnL, 2)
-                  + " USD), mạnh " + IntegerToString(strongClosed) + " (" + DoubleToString(strongClosedPnL, 2)
-                  + " USD, chỉ lệnh dương), max bậc yếu=" + IntegerToString(maxWeakLevel);
+      pairedLog = " | paired 2 phía (cùng phía giá, bậc 1→" + IntegerToString(maxWeakLevel) + "): yếu "
+                  + IntegerToString(weakClosed) + " (" + DoubleToString(weakClosedPnL, 2)
+                  + " USD), đối ứng " + IntegerToString(strongClosed) + " (" + DoubleToString(strongClosedPnL, 2) + " USD)";
       if(carryGateOn)
          pairedLog += " | carry Δ " + (carryUseFullClosedPnL ? "Σ đóng (âm+dương)" : "chỉ phần âm");
       else
@@ -2463,6 +3367,8 @@ bool ProcessOrderBalanceMode()
          " USD | điều chỉnh ngưỡng gồng Σ mở → ", DoubleToString(GetCompoundFloatingTriggerThresholdUsd(), 2), " USD",
          pairedLog, carry6c7Log, emaLog, fastSlowLog, rsiLog);
 
+   ClearDeferVirtualPendingGate();
+   NoVirtExecWatchDisarm();
    ManageGridOrders();
    return true;
 }
@@ -2683,6 +3589,8 @@ void ProcessVirtualPendingExecutions()
       {
          Print("VDualGrid -> market: ", EnumToString(e.orderType), " magic ", e.magic, " lot ", e.lot, " at level ", e.priceLevel, " (", cmt, ")");
          VirtualExecCooldownAdd(e.priceLevel, (e.orderType == ORDER_TYPE_BUY_STOP || e.orderType == ORDER_TYPE_BUY_LIMIT), e.leg);
+         g_noVirtExecHadSuccessfulTrigger = true;
+         g_noVirtExecDeadline = 0;
       }
       else
          Print("VDualGrid execute fail: ", EnumToString(e.orderType), " err ", GetLastError());
@@ -2788,6 +3696,7 @@ int MinuteOfDayServer(const datetime t)
    return dt.hour * 60 + dt.min;
 }
 
+// nowSrv phải là TimeCurrent() (giờ server sàn), không dùng TimeLocal.
 bool IsNowWithinRunWindow(const datetime nowSrv)
 {
    if(!EnableRunTimeWindow)
@@ -2926,6 +3835,102 @@ bool HasUsdHighImpactNewsPauseWindow(const datetime nowSrv)
    return g_newsAvoidHasUsdHighImpactToday;
 }
 
+//| Tổng P/L đã chốt (profit+swap+commission) từ 00:00 server → hiện tại, chart này + Magic. |
+//| Trong ngày: chưa đạt ngưỡng 8D thì phiên sau vẫn cộng dồn (mọi phiên cùng ngày gộp một tổng). |
+//| Sang ngày server mới: chỉ tính deal từ 0h ngày mới → không mang phần dư sang ngày kế. |
+double GetTodayClosedProfitUsd(const datetime nowSrv)
+{
+   const datetime dayStart = ServerDayStart(nowSrv);
+   if(!HistorySelect(dayStart, nowSrv + 1))
+      return 0.0;
+
+   const int deals = HistoryDealsTotal();
+   double totalUsd = 0.0;
+   for(int i = 0; i < deals; i++)
+   {
+      const ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0)
+         continue;
+      const long dType = HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+      if(dType != DEAL_TYPE_BUY && dType != DEAL_TYPE_SELL)
+         continue;
+      if(HistoryDealGetInteger(dealTicket, DEAL_ENTRY) != DEAL_ENTRY_OUT)
+         continue;
+      if(!IsOurMagic(HistoryDealGetInteger(dealTicket, DEAL_MAGIC)))
+         continue;
+      if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol)
+         continue;
+
+      totalUsd += HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+               +  HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+               +  HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+   }
+   return totalUsd;
+}
+
+bool IsDailyProfitPauseActiveNow(const datetime nowSrv)
+{
+   if(g_dailyProfitPauseDateKey == 0)
+      return false;
+   const long nowDateKey = ServerDateKey(nowSrv);
+   if(g_dailyProfitPauseDateKey != nowDateKey)
+   {
+      g_dailyProfitPauseDateKey = 0;
+      g_dailyProfitPauseLoggedDateKey = 0;
+      return false;
+   }
+   return true;
+}
+
+//| 8D: tổng lãi đóng trong ngày server (cộng dồn mọi phiên trong ngày) ≥ ngưỡng → khóa tới ngày sau. |
+//| Chưa đạt ngưỡng trong ngày: phiên kế tiếp vẫn tính trên cùng tổng (không reset giữa phiên).        |
+//| closeAllFirst=true: đóng hết vị thế/chờ khi kích hoạt giữa phiên; false: caller đã đóng sạch.|
+//| Trả về true nếu đang khóa theo ngày (sẵn có hoặc vừa kích hoạt).                            |
+bool EnsureDailyProfitPauseIfThresholdExceeded(const datetime nowSrv, const string reasonTag, const bool closeAllFirst)
+{
+   if(!EnableDailyProfitPauseAfterReset || DailyProfitPauseThresholdUSD <= 0.0)
+      return false;
+
+   if(IsDailyProfitPauseActiveNow(nowSrv))
+   {
+      g_runtimeSessionActive = false;
+      return true;
+   }
+
+   const double dayClosedProfitUsd = GetTodayClosedProfitUsd(nowSrv);
+   if(dayClosedProfitUsd + 1e-8 < DailyProfitPauseThresholdUSD)
+      return false;
+
+   if(closeAllFirst)
+   {
+      CloseAllPositionsAndOrders();
+      CompoundFloatThrHudUpdate(false);
+   }
+
+   const long nowDateKey = ServerDateKey(nowSrv);
+   g_dailyProfitPauseDateKey = nowDateKey;
+   g_dailyProfitPauseLoggedDateKey = nowDateKey;
+   g_runtimeSessionActive = false;
+   VirtualPendingClear();
+   ArrayResize(gridLevels, 0);
+   sessionStartTime = 0;
+   basePrice = 0.0;
+   g_sessionMaxAbsDistanceFromBasePips = 0.0;
+
+   const string msg = reasonTag + " — lãi ngày (cộng dồn phiên) đạt " + DoubleToString(dayClosedProfitUsd, 2)
+                    + " USD (ngưỡng " + DoubleToString(DailyProfitPauseThresholdUSD, 2)
+                    + ") => tạm dừng EA tới ngày server kế tiếp.";
+   Print("VDualGrid: ", msg);
+   if(EnableResetNotification)
+      SendResetNotification(msg);
+   return true;
+}
+
+bool TryPauseNewSessionAfterResetByDailyProfit(const string resetReasonTag)
+{
+   return EnsureDailyProfitPauseIfThresholdExceeded(TimeCurrent(), resetReasonTag, false);
+}
+
 //+------------------------------------------------------------------+
 //| 2e: giải phóng handle EMA khởi động.                               |
 //+------------------------------------------------------------------+
@@ -2956,6 +3961,11 @@ void StartupEmaCrossReleaseHandles()
       IndicatorRelease(g_startupThreeEma3Handle);
       g_startupThreeEma3Handle = INVALID_HANDLE;
    }
+   if(g_startupOpenGapEmaHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_startupOpenGapEmaHandle);
+      g_startupOpenGapEmaHandle = INVALID_HANDLE;
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -2967,6 +3977,14 @@ void StartupEmaCrossInitHandles()
    ENUM_TIMEFRAMES tf = StartupEmaCrossTimeframe;
    if(tf == PERIOD_CURRENT)
       tf = (ENUM_TIMEFRAMES)_Period;
+
+   if(EnableStartupOpenGapToEmaLimit)
+   {
+      const int pGap = MathMax(1, StartupOpenGapToEmaPeriod);
+      g_startupOpenGapEmaHandle = iMA(_Symbol, tf, pGap, 0, MODE_EMA, PRICE_CLOSE);
+      if(g_startupOpenGapEmaHandle == INVALID_HANDLE)
+         Print("VDualGrid: 2e — không tạo iMA EMA(Open-gap) để giới hạn khoảng cách Open-EMA.");
+   }
 
    if(EnableStartupThreeEmaOrdered)
    {
@@ -3031,7 +4049,10 @@ bool StartupEmaFastSlowCrossShift0vs1()
 //+------------------------------------------------------------------+
 bool StartupEmaAnyFilterWaiting()
 {
-   return (EnableStartupThreeEmaOrdered || EnableStartupEmaFastSlowCross);
+   return (EnableStartupThreeEmaOrdered
+           || EnableStartupEmaFastSlowCross
+           || EnableStartupOpenGapToEmaLimit
+           || EnableStartupThreeSameColorCandles);
 }
 
 //+------------------------------------------------------------------+
@@ -3039,11 +4060,85 @@ bool StartupEmaAnyFilterWaiting()
 //+------------------------------------------------------------------+
 bool StartupEmaBaseConditionPass()
 {
+   bool emaPass = true;
    if(EnableStartupThreeEmaOrdered)
-      return StartupThreeEmaOrderedPassShift0();
-   if(EnableStartupEmaFastSlowCross)
-      return StartupEmaFastSlowCrossShift0vs1();
-   return true;
+      emaPass = StartupThreeEmaOrderedPassShift0();
+   else if(EnableStartupEmaFastSlowCross)
+      emaPass = StartupEmaFastSlowCrossShift0vs1();
+   if(!emaPass)
+      return false;
+   if(!StartupOpenGapToEmaPassShift0())
+      return false;
+   return StartupThreeSameColorCandlesPass();
+}
+
+//+------------------------------------------------------------------+
+//| Giới hạn X cho điều kiện 2i (tránh buffer quá lớn / giá trị vô nghĩa). |
+//+------------------------------------------------------------------+
+int StartupSameColorConsecutiveBarsClamped()
+{
+   int x = StartupSameColorConsecutiveCount;
+   if(x < 1)
+      x = 1;
+   if(x > 50)
+      x = 50;
+   return x;
+}
+
+//+------------------------------------------------------------------+
+//| 2i: X nến đóng gần nhất (shift1..X) cùng màu xanh/đỏ,            |
+//| nến đóng shift X+1 phải khác màu. Doji (close==open) → không đạt.  |
+//+------------------------------------------------------------------+
+bool StartupThreeSameColorCandlesPass()
+{
+   if(!EnableStartupThreeSameColorCandles)
+      return true;
+
+   ENUM_TIMEFRAMES tf = StartupThreeSameColorCandlesTimeframe;
+   if(tf == PERIOD_CURRENT)
+      tf = (ENUM_TIMEFRAMES)_Period;
+
+   const int x = StartupSameColorConsecutiveBarsClamped();
+   const int need = x + 1;
+
+   double o[], c[];
+   ArrayResize(o, need);
+   ArrayResize(c, need);
+   if(CopyOpen(_Symbol, tf, 1, need, o) != need)
+      return false;
+   if(CopyClose(_Symbol, tf, 1, need, c) != need)
+      return false;
+
+   int dir = 0; // 1: xanh, -1: đỏ (X nến → phần tử 0..x-1 = shift1..X)
+   for(int i = 0; i < x; i++)
+   {
+      if(!MathIsValidNumber(o[i]) || !MathIsValidNumber(c[i]))
+         return false;
+      if(c[i] > o[i])
+      {
+         if(dir == -1)
+            return false;
+         dir = 1;
+      }
+      else if(c[i] < o[i])
+      {
+         if(dir == 1)
+            return false;
+         dir = -1;
+      }
+      else
+      {
+         return false;
+      }
+   }
+
+   // Nến ngay trước chuỗi (shift X+1) phải rõ xanh/đỏ và ngược màu
+   if(!MathIsValidNumber(o[x]) || !MathIsValidNumber(c[x]))
+      return false;
+   if(c[x] == o[x])
+      return false;
+   const int dirPrev = (c[x] > o[x]) ? 1 : -1;
+   return (dirPrev != dir);
 }
 
 //+------------------------------------------------------------------+
@@ -3094,7 +4189,44 @@ bool StartupThreeEmaOrderedPassShift0()
 }
 
 //+------------------------------------------------------------------+
-//| 2f: RSI cắt mức trên nến đóng gần nhất (shift2 → shift1), OR hai điều kiện. |
+//| 2e: chỉ cho đặt gốc khi khoảng cách Open nến hiện tại đến EMA(X) không vượt quá ngưỡng pip. |
+//+------------------------------------------------------------------+
+bool StartupOpenGapToEmaPassShift0()
+{
+   if(!EnableStartupOpenGapToEmaLimit)
+      return true;
+   if(g_startupOpenGapEmaHandle == INVALID_HANDLE)
+      return false;
+   if(BarsCalculated(g_startupOpenGapEmaHandle) < 2)
+      return false;
+
+   ENUM_TIMEFRAMES tf = StartupEmaCrossTimeframe;
+   if(tf == PERIOD_CURRENT)
+      tf = (ENUM_TIMEFRAMES)_Period;
+
+   double open0Buf[1];
+   if(CopyOpen(_Symbol, tf, 0, 1, open0Buf) != 1)
+      return false;
+   double ema0Buf[1];
+   if(CopyBuffer(g_startupOpenGapEmaHandle, 0, 0, 1, ema0Buf) != 1)
+      return false;
+
+   const double open0 = open0Buf[0];
+   const double ema0 = ema0Buf[0];
+   if(!MathIsValidNumber(open0) || !MathIsValidNumber(ema0))
+      return false;
+
+   const double pipPx = OnePipPrice();
+   if(pipPx <= 0.0)
+      return false;
+
+   const double gapPips = MathAbs(open0 - ema0) / pipPx;
+   const double maxGapPips = MathMax(0.0, StartupOpenGapToEmaMaxPips);
+   return (gapPips <= maxGapPips);
+}
+
+//+------------------------------------------------------------------+
+//| 2f: RSI cắt mức (shift2→1), tùy chọn N nến đóng trước đó cùng phía ngưỡng (lookback). |
 //+------------------------------------------------------------------+
 bool StartupRsiPassForBase(double &rsiOut)
 {
@@ -3109,16 +4241,22 @@ bool StartupRsiPassForBase(double &rsiOut)
       return false;
 
    const int rsiP = MathMax(1, StartupRsiPeriod);
-   if(BarsCalculated(g_startupRsiHandle) < rsiP + 2)
+   const int lookN = MathMax(0, StartupRsiCrossLookbackBars);
+   const bool useRecentTouch = EnableStartupRsiRecentTouchFilter;
+   const int recentBars = MathMax(1, StartupRsiRecentTouchBars);
+   int copyCount = (lookN > 0 ? lookN + 1 : 2);
+   if(useRecentTouch)
+      copyCount = MathMax(copyCount, recentBars + 1);
+   if(BarsCalculated(g_startupRsiHandle) < rsiP + copyCount + 1)
       return false;
 
    double rsiVal[];
-   ArrayResize(rsiVal, 2);
-   if(CopyBuffer(g_startupRsiHandle, 0, 1, 2, rsiVal) != 2)
+   ArrayResize(rsiVal, copyCount);
+   if(CopyBuffer(g_startupRsiHandle, 0, 1, copyCount, rsiVal) != copyCount)
       return false;
 
    const double rsiCur = rsiVal[0];   // shift 1 — nến đóng gần nhất
-   const double rsiPrev = rsiVal[1];  // shift 2 — nến đóng trước đó
+   const double rsiPrev = (copyCount >= 2 ? rsiVal[1] : rsiVal[0]);  // shift 2
    rsiOut = rsiCur;
    double aboveLv = StartupRsiAboveLevel;
    if(aboveLv > 100.0) aboveLv = 100.0;
@@ -3128,10 +4266,167 @@ bool StartupRsiPassForBase(double &rsiOut)
    bool passAbove = false;
    bool passBelow = false;
    if(useAbove)
-      passAbove = (rsiPrev <= aboveLv && rsiCur > aboveLv);
+   {
+      if(lookN <= 0)
+         passAbove = (rsiPrev <= aboveLv && rsiCur > aboveLv);
+      else if(rsiCur > aboveLv)
+      {
+         passAbove = true;
+         for(int i = 1; i <= lookN; i++)
+         {
+            if(i >= copyCount || !(rsiVal[i] < aboveLv))
+            {
+               passAbove = false;
+               break;
+            }
+         }
+      }
+   }
    if(useBelow)
-      passBelow = (rsiPrev >= belowLv && rsiCur < belowLv);
+   {
+      if(lookN <= 0)
+         passBelow = (rsiPrev >= belowLv && rsiCur < belowLv);
+      else if(rsiCur < belowLv)
+      {
+         passBelow = true;
+         for(int i = 1; i <= lookN; i++)
+         {
+            if(i >= copyCount || !(rsiVal[i] > belowLv))
+            {
+               passBelow = false;
+               break;
+            }
+         }
+      }
+   }
+   if(useRecentTouch)
+   {
+      bool seenPastExtreme = false; // Trong quá khứ có ít nhất 1 nến >X hoặc <X1
+      for(int i = 1; i <= recentBars; i++) // shift2…shift(X+1)
+      {
+         if(i >= copyCount)
+            break;
+         const double r = rsiVal[i];
+         if((useAbove && r > aboveLv) || (useBelow && r < belowLv))
+         {
+            seenPastExtreme = true;
+            break;
+         }
+      }
+      passAbove = (passAbove && seenPastExtreme);
+      passBelow = (passBelow && seenPastExtreme);
+   }
    return (passAbove || passBelow);
+}
+
+//+------------------------------------------------------------------+
+//| 2h: ADX đường chính — từng nến đóng shift 1…X: tùy chọn ADX>X1 và/hoặc ADX<X2 (X≤0 = tắt nhánh đó). |
+//+------------------------------------------------------------------+
+bool StartupAdxPassForBase(double &adxOut)
+{
+   adxOut = 0.0;
+   if(!EnableStartupAdxBaseFilter)
+      return true;
+   if(g_startupAdxHandle == INVALID_HANDLE)
+      return false;
+
+   const double x1 = StartupAdxGreaterThanLevel;
+   const double x2 = StartupAdxLessThanLevel;
+   const bool needGt = (x1 > 0.0);
+   const bool needLt = (x2 > 0.0);
+   if(!needGt && !needLt)
+      return true;
+
+   const int adxP = MathMax(1, StartupAdxPeriod);
+   const int nBars = MathMax(1, StartupAdxBarsAboveLevel);
+   const int needBars = MathMax(adxP * 2, adxP + nBars + 2);
+   if(BarsCalculated(g_startupAdxHandle) < needBars)
+      return false;
+
+   double adxVal[];
+   ArrayResize(adxVal, nBars);
+   if(CopyBuffer(g_startupAdxHandle, 0, 1, nBars, adxVal) != nBars)
+      return false;
+
+   adxOut = adxVal[0];
+   for(int i = 0; i < nBars; i++)
+   {
+      if(needGt && !(adxVal[i] > x1))
+         return false;
+      if(needLt && !(adxVal[i] < x2))
+         return false;
+   }
+   return true;
+}
+
+bool StartupRsiAndAdxPassForBase(double &rsiOut, double &adxOut)
+{
+   rsiOut = 0.0;
+   adxOut = 0.0;
+   return StartupRsiPassForBase(rsiOut) && StartupAdxPassForBase(adxOut);
+}
+
+string StartupAdxWaitReasonAdxPart()
+{
+   const int n = MathMax(1, StartupAdxBarsAboveLevel);
+   const string nStr = IntegerToString(n);
+   const double x1 = StartupAdxGreaterThanLevel;
+   const double x2 = StartupAdxLessThanLevel;
+   const bool g = (x1 > 0.0);
+   const bool l = (x2 > 0.0);
+   if(g && l)
+      return "ADX>" + DoubleToString(x1, 1) + " và ADX<" + DoubleToString(x2, 1) + " trên " + nStr + " nến đóng (shift1→" + nStr + ")";
+   if(g)
+      return "ADX>" + DoubleToString(x1, 1) + " trên " + nStr + " nến đóng (shift1→" + nStr + ")";
+   if(l)
+      return "ADX<" + DoubleToString(x2, 1) + " trên " + nStr + " nến đóng (shift1→" + nStr + ")";
+   return "ADX (2h bật nhưng X1/X2 đều tắt — không lọc ngưỡng)";
+}
+
+string StartupAdxEmaCondTagShort()
+{
+   const int n = MathMax(1, StartupAdxBarsAboveLevel);
+   const double x1 = StartupAdxGreaterThanLevel;
+   const double x2 = StartupAdxLessThanLevel;
+   const bool g = (x1 > 0.0);
+   const bool l = (x2 > 0.0);
+   if(!g && !l)
+      return "ADX(2h: X1/X2 tắt)";
+   string s = "ADX";
+   if(g)
+      s += ">" + DoubleToString(x1, 1);
+   if(l)
+      s += (g ? "+" : "") + "<" + DoubleToString(x2, 1);
+   s += "×" + IntegerToString(n) + "nến";
+   return s;
+}
+
+string StartupRsiWaitReasonRsiPart()
+{
+   if(EnableStartupRsiRecentTouchFilter)
+   {
+      const int x = MathMax(1, StartupRsiRecentTouchBars);
+      return "RSI cắt mức (shift2→1) + trong " + IntegerToString(x)
+           + " nến quá khứ có ít nhất 1 nến RSI >X hoặc RSI <X1";
+   }
+   const int lb = MathMax(0, StartupRsiCrossLookbackBars);
+   if(lb > 0)
+      return "RSI cắt (shift2→1) + " + IntegerToString(lb)
+           + " nến đóng trước: cắt lên → RSI đều <X; cắt xuống → đều >X1";
+   return "RSI cắt mức (shift2→1)";
+}
+
+string StartupRsiAdxWaitReasonPhrase()
+{
+   const bool r = EnableStartupRsiBaseFilter;
+   const bool a = EnableStartupAdxBaseFilter;
+   if(!r && !a)
+      return "";
+   if(r && !a)
+      return StartupRsiWaitReasonRsiPart();
+   if(!r && a)
+      return StartupAdxWaitReasonAdxPart();
+   return StartupRsiWaitReasonRsiPart() + " và " + StartupAdxWaitReasonAdxPart();
 }
 
 //+------------------------------------------------------------------+
@@ -3841,6 +5136,17 @@ int OnInit()
       if(g_initBaseEmaVirtGapHandle == INVALID_HANDLE)
          Print("VDualGrid: 2d — không tạo iMA (vùng cấm chờ ảo Gốc–EMA).");
    }
+   g_virtualGridPrevCloseEmaHandle = INVALID_HANDLE;
+   if(EnableVirtualGridPrevClosedVsEmaSideFilter)
+   {
+      ENUM_TIMEFRAMES vgTf = VirtualGridPrevClosedCandleTimeframe;
+      if(vgTf == PERIOD_CURRENT)
+         vgTf = (ENUM_TIMEFRAMES)_Period;
+      const int vgEmaP = MathMax(1, VirtualGridPrevClosedVsEmaPeriod);
+      g_virtualGridPrevCloseEmaHandle = iMA(_Symbol, vgTf, vgEmaP, 0, MODE_EMA, PRICE_CLOSE);
+      if(g_virtualGridPrevCloseEmaHandle == INVALID_HANDLE)
+         Print("VDualGrid: 2J — không tạo iMA (lọc đóng nến vs EMA cho chờ ảo).");
+   }
    if(EnableAutoFirstLotByBaseEmaGap)
    {
       ENUM_TIMEFRAMES afTf = AutoFirstLotByBaseEmaTimeframe;
@@ -3861,6 +5167,16 @@ int OnInit()
       g_startupRsiHandle = iRSI(_Symbol, srTf, srP, PRICE_CLOSE);
       if(g_startupRsiHandle == INVALID_HANDLE)
          Print("VDualGrid: 2f — không tạo iRSI (lọc khởi động đặt gốc).");
+   }
+   if(EnableStartupAdxBaseFilter)
+   {
+      ENUM_TIMEFRAMES adxTf = StartupAdxTimeframe;
+      if(adxTf == PERIOD_CURRENT)
+         adxTf = (ENUM_TIMEFRAMES)_Period;
+      const int adxP = MathMax(1, StartupAdxPeriod);
+      g_startupAdxHandle = iADX(_Symbol, adxTf, adxP);
+      if(g_startupAdxHandle == INVALID_HANDLE)
+         Print("VDualGrid: 2h — không tạo iADX (lọc khởi động đặt gốc).");
    }
    basePrice = 0.0;
    lastTickBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -3900,23 +5216,43 @@ int OnInit()
             if(EnableResetNotification)
                SendResetNotification("EA khởi động — chờ xếp 3 EMA đặt gốc");
          }
-         else
+         else if(EnableStartupEmaFastSlowCross)
          {
             Print("VDualGrid: trong lịch chạy — chờ tín hiệu EMA nhanh cắt EMA chậm mới đặt gốc (khung ", EnumToString(StartupEmaCrossTimeframe == PERIOD_CURRENT ? (ENUM_TIMEFRAMES)_Period : StartupEmaCrossTimeframe), ").");
             if(EnableResetNotification)
                SendResetNotification("EA khởi động — chờ EMA nhanh/chậm đặt gốc");
          }
+         else
+         {
+            Print("VDualGrid: trong lịch chạy — chờ khoảng cách Open nến hiện tại với EMA(", IntegerToString(MathMax(1, StartupOpenGapToEmaPeriod)),
+                  ") <= ", DoubleToString(MathMax(0.0, StartupOpenGapToEmaMaxPips), 1), " pip để đặt gốc.");
+            if(EnableResetNotification)
+               SendResetNotification("EA khởi động — chờ khoảng cách Open-EMA đạt ngưỡng");
+         }
       }
       else
       {
-         double startupRsi = 0.0;
-         if(StartupRsiPassForBase(startupRsi))
+         double startupRsi = 0.0, startupAdx = 0.0;
+         if(StartupRsiAndAdxPassForBase(startupRsi, startupAdx))
          {
-            basePrice = GridBasePriceAtPlacement();
-            InitializeGridLevels();
-            if(EnableResetNotification)
+            if(VirtualGridPrevClosedDualFiltersAllowBasePlacement())
             {
-               SendResetNotification("EA đã khởi động");
+               basePrice = GridBasePriceAtPlacement();
+               InitializeGridLevels();
+               if(EnableResetNotification)
+               {
+                  SendResetNotification("EA đã khởi động");
+               }
+            }
+            else
+            {
+               VirtualPendingClear();
+               ArrayResize(gridLevels, 0);
+               sessionStartTime = 0;
+               basePrice = 0.0;
+               Print("VDualGrid: trong lịch chạy — chờ 2J (cả hai lọc nến shift1) thỏa đồng thời trên ít nhất một chân A–H để đặt gốc.");
+               if(EnableResetNotification)
+                  SendResetNotification("EA khởi động — chờ 2J (hướng nến + đóng vs EMA) đặt gốc");
             }
          }
          else
@@ -3925,10 +5261,10 @@ int OnInit()
             ArrayResize(gridLevels, 0);
             sessionStartTime = 0;
             basePrice = 0.0;
-            Print("VDualGrid: trong lịch chạy — chờ RSI cắt mức (shift2→1) để đặt gốc.");
+            Print("VDualGrid: trong lịch chạy — chờ ", StartupRsiAdxWaitReasonPhrase(), " để đặt gốc.");
             if(EnableResetNotification)
             {
-               SendResetNotification("EA khởi động — chờ RSI đặt gốc");
+               SendResetNotification("EA khởi động — chờ đặt gốc (" + StartupRsiAdxWaitReasonPhrase() + ")");
             }
          }
       }
@@ -3943,7 +5279,7 @@ int OnInit()
    Print("========================================");
    Print("VDualGrid đã chạy.");
    Print("Symbol: ", _Symbol, " | Base: ", basePrice, " | Grid: ", GridDistancePips, " pips | Levels: ", ArraySize(gridLevels));
-   Print("Chờ ảo: chạy theo từng chân A/B/C/D/E/F (song song) | mức=", ArraySize(gridLevels), " | lot L1 A=", VirtualGridResolvedL1(VGRID_LEG_BUY_ABOVE), " | lot L1 E=", VirtualGridResolvedL1(VGRID_LEG_BUY_ABOVE_E));
+   Print("Chờ ảo: chạy theo từng chân A/B/C/D/E/F/G/H (song song) | mức=", ArraySize(gridLevels), " | lot L1 A=", VirtualGridResolvedL1(VGRID_LEG_BUY_ABOVE), " | lot L1 E=", VirtualGridResolvedL1(VGRID_LEG_BUY_ABOVE_E), " | lot L1 G=", VirtualGridResolvedL1(VGRID_LEG_SELL_ABOVE_G), " | lot L1 H=", VirtualGridResolvedL1(VGRID_LEG_BUY_BELOW_H));
    Print("VDualGrid: nạp/rút broker không đổi cấu hình EA — lưới/lot/mục tiêu theo input + P/L giao dịch (TEV), không theo số dư ledger.");
    if(EnableRunTimeWindow || EnableRunDayFilter)
    {
@@ -4035,10 +5371,20 @@ void OnDeinit(const int reason)
       IndicatorRelease(g_startupRsiHandle);
       g_startupRsiHandle = INVALID_HANDLE;
    }
+   if(g_startupAdxHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_startupAdxHandle);
+      g_startupAdxHandle = INVALID_HANDLE;
+   }
    if(g_initBaseEmaVirtGapHandle != INVALID_HANDLE)
    {
       IndicatorRelease(g_initBaseEmaVirtGapHandle);
       g_initBaseEmaVirtGapHandle = INVALID_HANDLE;
+   }
+   if(g_virtualGridPrevCloseEmaHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_virtualGridPrevCloseEmaHandle);
+      g_virtualGridPrevCloseEmaHandle = INVALID_HANDLE;
    }
    if(g_autoFirstLotByBaseEmaHandle != INVALID_HANDLE)
    {
@@ -4074,7 +5420,19 @@ void OnTick()
    // Đang chờ lịch (giờ/ngày server): chỉ bật phiên mới khi IsSchedulingAllowedForNewSession.
    if(!g_runtimeSessionActive)
    {
-      if(IsSchedulingAllowedForNewSession(TimeCurrent()))
+      const datetime nowSrv = TimeCurrent();
+      if(IsDailyProfitPauseActiveNow(nowSrv))
+      {
+         const long nowDateKey = ServerDateKey(nowSrv);
+         if(g_dailyProfitPauseLoggedDateKey != nowDateKey)
+         {
+            g_dailyProfitPauseLoggedDateKey = nowDateKey;
+            Print("VDualGrid: đang tạm dừng do đạt lợi nhuận ngày (lãi đóng cộng dồn các phiên). Chờ sang ngày server mới để cho phép khởi động phiên mới.");
+         }
+         return;
+      }
+
+      if(IsSchedulingAllowedForNewSession(nowSrv))
       {
          g_runtimeSessionActive = true;
          if(IsStartupRestartDelayBlocking())
@@ -4086,42 +5444,69 @@ void OnTick()
          }
          if(StartupEmaAnyFilterWaiting())
          {
-            if(EnableStartupThreeEmaOrdered)
+            if(EnableStartupThreeSameColorCandles)
+            {
+               const int sx = StartupSameColorConsecutiveBarsClamped();
+               Print("VDualGrid: vào lịch chạy — chờ ", sx,
+                     " nến đóng liên tiếp cùng màu (nến đóng ngay trước chuỗi phải khác màu) để đặt gốc.");
+               if(EnableResetNotification)
+                  SendResetNotification("Vào lịch — chờ " + IntegerToString(sx) + " nến cùng màu, nến trước chuỗi khác màu");
+            }
+            else if(EnableStartupThreeEmaOrdered)
             {
                Print("VDualGrid: vào lịch chạy — chờ xếp 3 EMA để đặt gốc.");
                if(EnableResetNotification)
                   SendResetNotification("Vào lịch — chờ xếp 3 EMA đặt gốc");
             }
-            else
+            else if(EnableStartupEmaFastSlowCross)
             {
                Print("VDualGrid: vào lịch chạy — chờ EMA nhanh cắt EMA chậm để đặt gốc.");
                if(EnableResetNotification)
                   SendResetNotification("Vào lịch — chờ EMA nhanh/chậm đặt gốc");
             }
+            else
+            {
+               Print("VDualGrid: vào lịch chạy — chờ khoảng cách Open nến hiện tại với EMA(", IntegerToString(MathMax(1, StartupOpenGapToEmaPeriod)),
+                     ") <= ", DoubleToString(MathMax(0.0, StartupOpenGapToEmaMaxPips), 1), " pip để đặt gốc.");
+               if(EnableResetNotification)
+                  SendResetNotification("Vào lịch — chờ khoảng cách Open-EMA đạt ngưỡng");
+            }
          }
          else
          {
-            double startupRsi = 0.0;
-            if(StartupRsiPassForBase(startupRsi))
+            double startupRsi = 0.0, startupAdx = 0.0;
+            if(StartupRsiAndAdxPassForBase(startupRsi, startupAdx))
             {
-               basePrice = GridBasePriceAtPlacement();
-               InitializeGridLevels();
-               Print("VDualGrid: vào lịch chạy — khởi động phiên mới, base=", DoubleToString(basePrice, dgt));
-               if(EnableResetNotification)
+               if(VirtualGridPrevClosedDualFiltersAllowBasePlacement())
                {
-                  SendResetNotification("Vào lịch chạy — EA khởi động phiên mới");
+                  basePrice = GridBasePriceAtPlacement();
+                  InitializeGridLevels();
+                  Print("VDualGrid: vào lịch chạy — khởi động phiên mới, base=", DoubleToString(basePrice, dgt));
+                  if(EnableResetNotification)
+                  {
+                     SendResetNotification("Vào lịch chạy — EA khởi động phiên mới");
+                  }
+                  ManageGridOrders();
                }
-               ManageGridOrders();
+               else
+               {
+                  ArrayResize(gridLevels, 0);
+                  sessionStartTime = 0;
+                  basePrice = 0.0;
+                  Print("VDualGrid: vào lịch chạy — chờ 2J (cả hai lọc nến shift1) thỏa đồng thời trên ít nhất một chân A–H để đặt gốc.");
+                  if(EnableResetNotification)
+                     SendResetNotification("Vào lịch — chờ 2J (hướng nến + đóng vs EMA) đặt gốc");
+               }
             }
             else
             {
                ArrayResize(gridLevels, 0);
                sessionStartTime = 0;
                basePrice = 0.0;
-               Print("VDualGrid: vào lịch chạy — chờ RSI cắt mức (shift2→1) để đặt gốc.");
+               Print("VDualGrid: vào lịch chạy — chờ ", StartupRsiAdxWaitReasonPhrase(), " để đặt gốc.");
                if(EnableResetNotification)
                {
-                  SendResetNotification("Vào lịch — chờ RSI đặt gốc");
+                  SendResetNotification("Vào lịch — chờ đặt gốc (" + StartupRsiAdxWaitReasonPhrase() + ")");
                }
             }
          }
@@ -4130,6 +5515,20 @@ void OnTick()
    }
 
    const int expectedGridLevelCount = MaxGridLevels * 2;
+
+   // 8D: theo dõi lãi đã đóng trong ngày server (mọi phiên); không chờ tới lần reset.
+   static ulong g_lastDailyProfitPauseScanMs = 0;
+   if(EnableDailyProfitPauseAfterReset && DailyProfitPauseThresholdUSD > 0.0 && g_runtimeSessionActive)
+   {
+      const ulong msNow = GetTickCount64();
+      if(msNow - g_lastDailyProfitPauseScanMs >= 1000)
+      {
+         g_lastDailyProfitPauseScanMs = msNow;
+         const datetime nowSrvDaily = TimeCurrent();
+         if(EnsureDailyProfitPauseIfThresholdExceeded(nowSrvDaily, "Giám sát lãi ngày", true))
+            return;
+      }
+   }
 
    // Chưa có đường gốc: trong lịch + khung giờ (nếu bật) → đặt gốc một lần rồi khởi tạo lưới. Có 2e: thêm chờ cắt EMA; đã có gốc thì không vào khối này — EA chạy tiếp, không phụ thuộc EMA.
    if(g_runtimeSessionActive && basePrice <= 0.0)
@@ -4140,16 +5539,38 @@ void OnTick()
          return;
       if(StartupEmaAnyFilterWaiting() && !StartupEmaBaseConditionPass())
          return;
-      double startupRsi = 0.0;
-      if(!StartupRsiPassForBase(startupRsi))
+      double startupRsi = 0.0, startupAdx = 0.0;
+      if(!StartupRsiAndAdxPassForBase(startupRsi, startupAdx))
          return;
+      if(!VirtualGridPrevClosedDualFiltersAllowBasePlacement())
+      {
+         VirtualGridPrevClosedDualFilterMaybeLogWaitingForBase();
+         return;
+      }
       basePrice = GridBasePriceAtPlacement();
       InitializeGridLevels();
       string emaCondTag = " (lịch + khung giờ nếu bật)";
-      if(EnableStartupThreeEmaOrdered)
+      if(EnableStartupThreeSameColorCandles)
+      {
+         const int sx = StartupSameColorConsecutiveBarsClamped();
+         emaCondTag = " (lịch + khung giờ + " + IntegerToString(sx) + " nến cùng màu, nến trước chuỗi khác màu)";
+      }
+      else if(EnableStartupThreeEmaOrdered)
          emaCondTag = " (lịch + khung giờ + xếp 3 EMA)";
       else if(EnableStartupEmaFastSlowCross)
          emaCondTag = " (lịch + khung giờ + cắt EMA shift0/1)";
+      else if(EnableStartupOpenGapToEmaLimit)
+         emaCondTag = " (lịch + khung giờ + giới hạn khoảng cách Open-EMA)";
+      if(EnableStartupRsiBaseFilter || EnableStartupAdxBaseFilter)
+      {
+         emaCondTag += " + ";
+         if(EnableStartupRsiBaseFilter && EnableStartupAdxBaseFilter)
+            emaCondTag += "RSI+ADX";
+         else if(EnableStartupRsiBaseFilter)
+            emaCondTag += "RSI";
+         else
+            emaCondTag += StartupAdxEmaCondTagShort();
+      }
       Print("VDualGrid: đủ điều kiện đặt gốc — base=", DoubleToString(basePrice, dgt), emaCondTag);
       if(EnableResetNotification)
       {
@@ -4174,6 +5595,8 @@ void OnTick()
       CompoundFloatThrHudUpdate(false);
 
    double compoundOpenProfitSwapUsd = 0.0;
+   double compoundSessionOpenLotsSum = 0.0;
+   double compoundSessionPlRawOpenProfitSwapUsd = 0.0; // 6f: Σ(profit+swap) mở, không loại E/F theo CompoundTriggerProgressMode
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       const ulong ticket = PositionGetTicket(i);
@@ -4184,6 +5607,8 @@ void OnTick()
       if(!CompoundPositionPassesSessionFilter(ticket))
          continue;
       compoundOpenProfitSwapUsd += GetCompoundOpenProfitSwapContribution(ticket);
+      compoundSessionOpenLotsSum += PositionGetDouble(POSITION_VOLUME);
+      compoundSessionPlRawOpenProfitSwapUsd += PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
    }
 
    const double onePip = OnePipPrice();
@@ -4197,16 +5622,12 @@ void OnTick()
    }
 
    const double compoundTriggerProgressUsd = GetCompoundTriggerProgressUsd(compoundOpenProfitSwapUsd);
-   bool compoundNotReachedThresholdYet = true;
-   if(EnableCompoundTotalFloatingProfit && CompoundTotalProfitTriggerUSD > 0.0 && basePrice > 0.0)
-      compoundNotReachedThresholdYet = (compoundTriggerProgressUsd < GetCompoundFloatingTriggerThresholdUsd());
 
    if(EnableSessionDistanceAndTotalProfitReset
       && basePrice > 0.0
       && SessionDistanceResetPips > 0.0
       && SessionTotalProfitResetUSD > 0.0
-      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid
-      && compoundNotReachedThresholdYet)
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid)
    {
       const double totalSessionProfitSwapUsd = compoundOpenProfitSwapUsd + g_compoundSessionClosedTotalProfitSwapUsd;
       const double orderBalanceNegThresholdUsd = MathAbs(SessionOrderBalanceNegativeTriggerUSD);
@@ -4226,8 +5647,7 @@ void OnTick()
    if(EnableSessionOpenPlusClosedProfitReset
       && basePrice > 0.0
       && SessionOpenPlusClosedProfitResetUSD > 0.0
-      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid
-      && compoundNotReachedThresholdYet)
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid)
    {
       const double totalSessionProfitSwapUsd = compoundOpenProfitSwapUsd + g_compoundSessionClosedTotalProfitSwapUsd;
       if(totalSessionProfitSwapUsd >= SessionOpenPlusClosedProfitResetUSD)
@@ -4237,12 +5657,188 @@ void OnTick()
       }
    }
 
+   if(EnableSessionNegativePlHardStopReset
+      && SessionNegativePlHardStopUsd > 0.0
+      && basePrice > 0.0
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid)
+   {
+      const double totalSessionPlClosedPlusOpenUsd = compoundSessionPlRawOpenProfitSwapUsd + g_compoundSessionClosedTotalProfitSwapUsd;
+      // X=2000 ⇒ kích hoạt tại P/L <= -2000 (bao gồm chính xác -2000); P/L -1999 không đạt ngưỡng.
+      if(totalSessionPlClosedPlusOpenUsd <= -SessionNegativePlHardStopUsd)
+      {
+         ResetAfterSessionNegativePlHardStopHit(totalSessionPlClosedPlusOpenUsd);
+         return;
+      }
+   }
+
+   if(EnableSessionCarryExceededReset
+      && SessionCarryExceededResetUsd > 0.0
+      && basePrice > 0.0
+      && sessionStartTime > 0
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid)
+   {
+      if(GetCarryInSessionUsd() >= SessionCarryExceededResetUsd)
+      {
+         ResetAfterSessionCarryExceedsThresholdHit();
+         return;
+      }
+   }
+
+   // Giá ngoài biên ±Max bậc kể từ gốc (offset giống nấc ±Max trong lưới, kể cả khi không đặt chờ ảo một phía).
+   // Carry: tổng P/L phiên = Σ(profit+swap) mở thô + đóng trong phiên (giống 6g), không dùng
+   // compoundOpenProfitSwapUsd (có thể loại E/F dương theo CompoundTriggerProgressMode).
+   if(EnableResetWhenPriceOutsideTopBottomGrid
+      && basePrice > 0.0
+      && MaxGridLevels > 0
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid)
+   {
+      const double bidOut = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      const double askOut = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      const double ptOut = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+      const double tolOut = MathMax(GridPriceTolerance(), ptOut * 2.0);
+      const double topBoundPx = NormalizeDouble(basePrice + GridOffsetFromBaseForSignedLevel(MaxGridLevels), dgt);
+      const double bottomBoundPx = NormalizeDouble(basePrice + GridOffsetFromBaseForSignedLevel(-MaxGridLevels), dgt);
+      const bool priceAboveTopGrid = (bidOut > topBoundPx + tolOut);
+      const bool priceBelowBottomGrid = (askOut < bottomBoundPx - tolOut);
+      if(priceAboveTopGrid || priceBelowBottomGrid)
+      {
+         const double totalSessionProfitSwapUsdOut = compoundSessionPlRawOpenProfitSwapUsd + g_compoundSessionClosedTotalProfitSwapUsd;
+         ResetAfterPriceOutsideTopBottomGridHit(totalSessionProfitSwapUsdOut);
+         return;
+      }
+   }
+
+   // Chỉ chờ ảo một phía gốc …; đóng nến khung xác nhận: Close[1] ngược gốc;
+   // nếu MinGridLevels≥1: Bid (dưới gốc) / Ask (trên gốc) phải cách gốc ≥ X bậc (FirstOffset+D).
+   if(!EnableResetWhenVirtualOnlyWrongSideOfPriceVsBase || basePrice <= 0.0)
+      g_resetVwSideLastConfirmBarTime = 0;
+
+   if(EnableResetWhenVirtualOnlyWrongSideOfPriceVsBase
+      && g_runtimeSessionActive
+      && basePrice > 0.0
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid
+      && !OurSymbolMagicHasAnyOpenPosition()
+      && !OurSymbolMagicHasAnyBrokerPendingOrder())
+   {
+      int nVirtAbove = 0, nVirtBelow = 0;
+      VirtualPendingCountOurMagicByBaseSide(nVirtAbove, nVirtBelow);
+      const int nVirtTotal = nVirtAbove + nVirtBelow;
+      if(nVirtTotal >= 1)
+      {
+         const bool onlyAboveVirtual = (nVirtAbove >= 1 && nVirtBelow == 0);
+         const bool onlyBelowVirtual = (nVirtBelow >= 1 && nVirtAbove == 0);
+         if(onlyAboveVirtual || onlyBelowVirtual)
+         {
+            ENUM_TIMEFRAMES confTf = ResetWhenVirtualWrongSideConfirmBarTimeframe;
+            if(confTf == PERIOD_CURRENT)
+               confTf = (ENUM_TIMEFRAMES)_Period;
+            if(Bars(_Symbol, confTf) >= 2)
+            {
+               const datetime bar0Time = iTime(_Symbol, confTf, 0);
+               if(bar0Time > 0)
+               {
+                  if(g_resetVwSideLastConfirmBarTime == 0)
+                     g_resetVwSideLastConfirmBarTime = bar0Time;
+                  else if(bar0Time != g_resetVwSideLastConfirmBarTime)
+                  {
+                     g_resetVwSideLastConfirmBarTime = bar0Time;
+                     const double prevClose = iClose(_Symbol, confTf, 1);
+                     const double ptVs = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+                     const double tolVs = MathMax(GridPriceTolerance(), ptVs * 3.0);
+                     if(MathIsValidNumber(prevClose) && prevClose > 0.0)
+                     {
+                        const bool priceClosedBelowBase = (prevClose < basePrice - tolVs);
+                        const bool priceClosedAboveBase = (prevClose > basePrice + tolVs);
+                        if((onlyAboveVirtual && priceClosedBelowBase) || (onlyBelowVirtual && priceClosedAboveBase))
+                        {
+                           int minLv = ResetWhenVirtualWrongSideMinGridLevelsFromBase;
+                           if(minLv > MaxGridLevels)
+                              minLv = MaxGridLevels;
+                           bool distOk = true;
+                           if(minLv >= 1)
+                           {
+                              const double needDist = GridRadialDistanceFromBaseForAbsLevel(minLv);
+                              const double bidNow = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+                              const double askNow = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+                              const double distTol = MathMax(GridPriceTolerance(), ptVs * 2.0);
+                              if(onlyAboveVirtual && priceClosedBelowBase)
+                                 distOk = ((basePrice - bidNow) >= needDist - distTol);
+                              else if(onlyBelowVirtual && priceClosedAboveBase)
+                                 distOk = ((askNow - basePrice) >= needDist - distTol);
+                           }
+                           if(distOk)
+                           {
+                              const double totalSessionProfitSwapVs = compoundSessionPlRawOpenProfitSwapUsd + g_compoundSessionClosedTotalProfitSwapUsd;
+                              ResetAfterVirtualPendingsWrongSideOfBaseHit(totalSessionProfitSwapVs);
+                              return;
+                           }
+                        }
+                     }
+                  }
+               }
+            }
+         }
+      }
+   }
+
+   // Không vị thế mở; max(|Bid−gốc|,|Ask−gốc|) ≥ X bậc (FirstOffset+D); mid ngoài thân nến đóng trước (shift1).
+   if(EnableResetWhenNoOpenPosMinGridAndOutsidePrevBody
+      && g_runtimeSessionActive
+      && basePrice > 0.0
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid
+      && !OurSymbolMagicHasAnyOpenPosition())
+   {
+      const double bidNb = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      const double askNb = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      const double ptNb = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+      const double distTolNb = MathMax(GridPriceTolerance(), ptNb * 2.0);
+      int minLvNb = ResetWhenNoOpenPosMinGridLevelsFromBase;
+      if(minLvNb > MaxGridLevels)
+         minLvNb = MaxGridLevels;
+      bool distOkNb = true;
+      if(minLvNb >= 1)
+      {
+         const double needDistNb = GridRadialDistanceFromBaseForAbsLevel(minLvNb);
+         const double radialNb = MathMax(MathAbs(bidNb - basePrice), MathAbs(askNb - basePrice));
+         distOkNb = (radialNb >= needDistNb - distTolNb);
+      }
+      if(distOkNb && PriceMidStrictlyOutsidePrevClosedBody(ResetWhenNoOpenPosPrevCandleBodyTimeframe, bidNb, askNb))
+      {
+         const double totalSessionProfitSwapNb = compoundSessionPlRawOpenProfitSwapUsd + g_compoundSessionClosedTotalProfitSwapUsd;
+         ResetAfterNoOpenPosMinGridOutsidePrevBodyHit(totalSessionProfitSwapNb);
+         return;
+      }
+   }
+
+   if(EnableSessionPlAndTotalOpenLotsReset
+      && basePrice > 0.0
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid)
+   {
+      const double volStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      const double lotsTol = (volStep > 0.0 ? volStep * 0.5 : 0.0005) + 1e-12;
+      const double sessionLotsClosedPlusOpen = compoundSessionOpenLotsSum + g_compoundSessionClosedOutVolumeLots;
+      const bool lotsMatch = (SessionPlLotsResetTotalOpenLots > 0.0
+                             && MathAbs(sessionLotsClosedPlusOpen - SessionPlLotsResetTotalOpenLots) <= lotsTol);
+      const double totalSessionProfitSwapUsd6f = compoundSessionPlRawOpenProfitSwapUsd + g_compoundSessionClosedTotalProfitSwapUsd;
+      const bool thresholdPositive = (SessionPlLotsResetThresholdUsd > 0.0);
+      const bool thresholdNegative = (SessionPlLotsResetThresholdUsd < 0.0);
+      const bool plOk = (!thresholdPositive && !thresholdNegative
+                        ? true
+                        : ((thresholdPositive && totalSessionProfitSwapUsd6f >= SessionPlLotsResetThresholdUsd)
+                           || (thresholdNegative && totalSessionProfitSwapUsd6f <= SessionPlLotsResetThresholdUsd)));
+      if(lotsMatch && plOk)
+      {
+         ResetAfterSessionPlAndTotalOpenLotsHit(totalSessionProfitSwapUsd6f, compoundSessionOpenLotsSum,
+                                                g_compoundSessionClosedOutVolumeLots);
+         return;
+      }
+   }
+
    if(EnableResetWhenReachPrevSessionPeak
       && basePrice > 0.0
       && sessionStartTime > 0
       && g_prevSessionPeakClosedProfitUsd > 0.0
-      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid
-      && compoundNotReachedThresholdYet)
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid)
    {
       const double closedCapitalNow = GetTradingClosedCapitalUSD();
       if(closedCapitalNow > g_sessionPeakClosedCapitalUsd)
@@ -4264,16 +5860,25 @@ void OnTick()
    if(EnableResetNotification)
       UpdateSessionStatsForNotification();
 
-   if(EnableCompoundTotalFloatingProfit && CompoundTotalProfitTriggerUSD > 0.0 && basePrice > 0.0
-      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid
-      && compoundTriggerProgressUsd >= GetCompoundFloatingTriggerThresholdUsd())
+   if(basePrice > 0.0
+      && !g_compoundTotalProfitActive && !g_compoundArmed && !g_compoundAfterClearWaitGrid)
    {
-      TryArmCompoundTotalProfitMode();
+      if(EnableCompoundTotalFloatingProfitLimitReverse && CompoundTotalProfitLimitReverseTriggerUSD > 0.0
+         && GetCompoundTriggerProgressUsdByMode(compoundOpenProfitSwapUsd, true) >= GetCompoundFloatingTriggerThresholdUsdByMode(true))
+      {
+         TryArmCompoundTotalProfitMode(true, CompoundTotalProfitLimitReverseTriggerUSD);
+      }
+      else if(EnableCompoundTotalFloatingProfit && CompoundTotalProfitTriggerUSD > 0.0
+              && compoundTriggerProgressUsd >= GetCompoundFloatingTriggerThresholdUsd())
+      {
+         TryArmCompoundTotalProfitMode(false, CompoundTotalProfitTriggerUSD);
+      }
    }
 
    ProcessCompoundArming(compoundOpenProfitSwapUsd);
 
    ManageGridOrdersThrottled();
+   TryRebaseIfNoVirtualExecTimedOut();
 }
 
 //+------------------------------------------------------------------+
@@ -4846,6 +6451,7 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
       g_compoundSessionClosedNegativeProfitSwapUsd += MathMin(0.0, dealProfitSwap);
       if(dealReason == DEAL_REASON_TP)
          g_compoundSessionClosedTpProfitSwapUsd += dealProfitSwap;
+      g_compoundSessionClosedOutVolumeLots += HistoryDealGetDouble(trans.deal, DEAL_VOLUME);
    }
    if(eaAttachTime > 0 && dealTime >= (long)eaAttachTime)
    {
@@ -4877,6 +6483,41 @@ double GridOffsetFromBaseForSignedLevel(int signedLevel)
       firstOffset = 0.0;
    double off = firstOffset + ((double)n - 1.0) * D;
    return (signedLevel > 0) ? off : -off;
+}
+
+//+------------------------------------------------------------------+
+//| Khoảng giá từ gốc tới bậc ±X (cùng công thức bậc ±1, bậc ±2…).   |
+//+------------------------------------------------------------------+
+double GridRadialDistanceFromBaseForAbsLevel(const int absLevel)
+{
+   if(absLevel < 1)
+      return 0.0;
+   int n = absLevel;
+   if(n > MaxGridLevels)
+      n = MaxGridLevels;
+   return MathAbs(GridOffsetFromBaseForSignedLevel(n));
+}
+
+//+------------------------------------------------------------------+
+//| Mid (Bid+Ask)/2 nằm ngoài đoạn thân nến đóng shift1: [min(O,C), max(O,C)]. |
+//+------------------------------------------------------------------+
+bool PriceMidStrictlyOutsidePrevClosedBody(const ENUM_TIMEFRAMES candleTf, const double bid, const double ask)
+{
+   ENUM_TIMEFRAMES tf = candleTf;
+   if(tf == PERIOD_CURRENT)
+      tf = (ENUM_TIMEFRAMES)_Period;
+   if(Bars(_Symbol, tf) < 2)
+      return false;
+   const double bo = iOpen(_Symbol, tf, 1);
+   const double bc = iClose(_Symbol, tf, 1);
+   if(!MathIsValidNumber(bo) || !MathIsValidNumber(bc))
+      return false;
+   const double bodyLo = MathMin(bo, bc);
+   const double bodyHi = MathMax(bo, bc);
+   const double mid = (bid + ask) * 0.5;
+   const double pt = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   const double tol = MathMax(GridPriceTolerance(), pt * 2.0);
+   return (mid < bodyLo - tol || mid > bodyHi + tol);
 }
 
 //+------------------------------------------------------------------+
@@ -4933,6 +6574,8 @@ double VirtualGridResolvedL1(const ENUM_VGRID_LEG leg)
       case VGRID_LEG_BUY_BELOW: return VGridL1BuyBelow;
       case VGRID_LEG_BUY_ABOVE_E: return VGridL1BuyAboveE;
       case VGRID_LEG_SELL_BELOW_F: return VGridL1SellBelowF;
+      case VGRID_LEG_SELL_ABOVE_G: return VGridL1SellAboveG;
+      case VGRID_LEG_BUY_BELOW_H: return VGridL1BuyBelowH;
    }
    return VGridL1BuyAbove;
 }
@@ -4947,6 +6590,8 @@ ENUM_LOT_SCALE VirtualGridResolvedScale(const ENUM_VGRID_LEG leg)
       case VGRID_LEG_BUY_BELOW: return VGridScaleBuyBelow;
       case VGRID_LEG_BUY_ABOVE_E: return VGridScaleBuyAboveE;
       case VGRID_LEG_SELL_BELOW_F: return VGridScaleSellBelowF;
+      case VGRID_LEG_SELL_ABOVE_G: return VGridScaleSellAboveG;
+      case VGRID_LEG_BUY_BELOW_H: return VGridScaleBuyBelowH;
    }
    return VGridScaleBuyAbove;
 }
@@ -4961,6 +6606,8 @@ double VirtualGridResolvedAddRaw(const ENUM_VGRID_LEG leg)
       case VGRID_LEG_BUY_BELOW: return VGridLotAddBuyBelow;
       case VGRID_LEG_BUY_ABOVE_E: return VGridLotAddBuyAboveE;
       case VGRID_LEG_SELL_BELOW_F: return VGridLotAddSellBelowF;
+      case VGRID_LEG_SELL_ABOVE_G: return VGridLotAddSellAboveG;
+      case VGRID_LEG_BUY_BELOW_H: return VGridLotAddBuyBelowH;
    }
    return VGridLotAddBuyAbove;
 }
@@ -4975,6 +6622,8 @@ double VirtualGridResolvedMult(const ENUM_VGRID_LEG leg)
       case VGRID_LEG_BUY_BELOW: return VGridLotMultBuyBelow;
       case VGRID_LEG_BUY_ABOVE_E: return VGridLotMultBuyAboveE;
       case VGRID_LEG_SELL_BELOW_F: return VGridLotMultSellBelowF;
+      case VGRID_LEG_SELL_ABOVE_G: return VGridLotMultSellAboveG;
+      case VGRID_LEG_BUY_BELOW_H: return VGridLotMultBuyBelowH;
    }
    return VGridLotMultBuyAbove;
 }
@@ -4989,6 +6638,8 @@ double VirtualGridResolvedMaxLot(const ENUM_VGRID_LEG leg)
       case VGRID_LEG_BUY_BELOW: return VGridMaxLotBuyBelow;
       case VGRID_LEG_BUY_ABOVE_E: return VGridMaxLotBuyAboveE;
       case VGRID_LEG_SELL_BELOW_F: return VGridMaxLotSellBelowF;
+      case VGRID_LEG_SELL_ABOVE_G: return VGridMaxLotSellAboveG;
+      case VGRID_LEG_BUY_BELOW_H: return VGridMaxLotBuyBelowH;
    }
    return VGridMaxLotBuyAbove;
 }
@@ -5003,6 +6654,8 @@ bool VirtualGridResolvedTpAtNextLevel(const ENUM_VGRID_LEG leg)
       case VGRID_LEG_BUY_BELOW: return VGridTpNextBuyBelow;
       case VGRID_LEG_BUY_ABOVE_E: return VGridTpNextBuyAboveE;
       case VGRID_LEG_SELL_BELOW_F: return VGridTpNextSellBelowF;
+      case VGRID_LEG_SELL_ABOVE_G: return VGridTpNextSellAboveG;
+      case VGRID_LEG_BUY_BELOW_H: return VGridTpNextBuyBelowH;
    }
    return VGridTpNextBuyAbove;
 }
@@ -5017,8 +6670,56 @@ double VirtualGridResolvedTpPips(const ENUM_VGRID_LEG leg)
       case VGRID_LEG_BUY_BELOW: return VGridTpPipsBuyBelow;
       case VGRID_LEG_BUY_ABOVE_E: return VGridTpPipsBuyAboveE;
       case VGRID_LEG_SELL_BELOW_F: return VGridTpPipsSellBelowF;
+      case VGRID_LEG_SELL_ABOVE_G: return VGridTpPipsSellAboveG;
+      case VGRID_LEG_BUY_BELOW_H: return VGridTpPipsBuyBelowH;
    }
    return VGridTpPipsBuyAbove;
+}
+
+//+------------------------------------------------------------------+
+//| 4g: có đủ ô lot hợp lệ để có thể bật L1 EF theo điều kiện.        |
+//+------------------------------------------------------------------+
+bool EfFloatingLossModeInputsConfigured()
+{
+   if(!EnableEfFirstLotFromOpenFloatingLoss || EfFloatingLossTriggerUsd <= 0.0)
+      return false;
+   const bool carryConfigured = EnableEfFloatingLossGateByCompoundCarry && EfFloatingLossMinCompoundCarryUsd > 0.0;
+   const bool carryLotSet = carryConfigured && EfFloatingLossCarryMatchedFirstLot > 0.0;
+   const bool floatLotSet = EfFloatingLossFirstLot > 0.0;
+   if(carryConfigured)
+      return carryLotSet || floatLotSet;
+   return floatLotSet;
+}
+
+//+------------------------------------------------------------------+
+//| 4g: Lot L1 khi đã thỏa float (+ carry gate nếu bật).             |
+//+------------------------------------------------------------------+
+double EfFloatingLossResolvedFirstLot()
+{
+   if(EnableEfFloatingLossGateByCompoundCarry && EfFloatingLossMinCompoundCarryUsd > 0.0
+      && EfFloatingLossCarryMatchedFirstLot > 0.0)
+      return EfFloatingLossCarryMatchedFirstLot;
+   return EfFloatingLossFirstLot;
+}
+
+//+------------------------------------------------------------------+
+//| 4g: đủ điều kiện để L1 Buy E / Sell F = lot cố định (float + tuỳ chọn carry). |
+//+------------------------------------------------------------------+
+bool EfFirstLotFloatingLossConditionMet()
+{
+   if(!EfFloatingLossModeInputsConfigured())
+      return false;
+   if(EfFloatingLossResolvedFirstLot() <= 0.0)
+      return false;
+   const double floating = GetOurMagicFloatingUSD();
+   if(floating > -EfFloatingLossTriggerUsd)
+      return false;
+   if(EnableEfFloatingLossGateByCompoundCarry && EfFloatingLossMinCompoundCarryUsd > 0.0)
+   {
+      if(GetCompoundCarryContributionUsd() + 1e-8 < EfFloatingLossMinCompoundCarryUsd)
+         return false;
+   }
+   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -5026,6 +6727,8 @@ double VirtualGridResolvedTpPips(const ENUM_VGRID_LEG leg)
 //+------------------------------------------------------------------+
 double GetBaseLotForVirtualGridLeg(const ENUM_VGRID_LEG leg)
 {
+   if((leg == VGRID_LEG_BUY_ABOVE_E || leg == VGRID_LEG_SELL_BELOW_F) && EfFirstLotFloatingLossConditionMet())
+      return EfFloatingLossResolvedFirstLot();
    if(EnableAutoFirstLotByBaseEmaGap && g_autoFirstLotSnapshotActive && g_autoFirstLotUsingOverride && AutoFirstLotByBaseEmaLot > 0.0)
       return AutoFirstLotByBaseEmaLot;
    return VirtualGridResolvedL1(leg);
@@ -5228,6 +6931,26 @@ double ComputeVirtualTakeProfitPrice(ENUM_ORDER_TYPE orderType, ENUM_VGRID_LEG l
 }
 
 //+------------------------------------------------------------------+
+//| 4g: Cập nhật lot (+ TP đồng bộ chân E/F trên chờ ảo khi P/L thay đổi). |
+//| Lệnh thực không qua nhánh chờ ảo → không đổi sau khi khớp.           |
+//+------------------------------------------------------------------+
+void RefreshEfVirtualPendingLotIfStale(long magic, ENUM_ORDER_TYPE orderType, ENUM_VGRID_LEG leg, double priceLevel, int signedLevelNum)
+{
+   if(!EfFloatingLossModeInputsConfigured())
+      return;
+   if(leg != VGRID_LEG_BUY_ABOVE_E && leg != VGRID_LEG_SELL_BELOW_F)
+      return;
+   if(!IsOurMagic(magic))
+      return;
+   const int idx = VirtualPendingFindIndex(magic, orderType, leg, priceLevel);
+   if(idx < 0)
+      return;
+   const double entryPx = g_virtualPending[idx].priceLevel;
+   g_virtualPending[idx].lot = GetLotForVirtualGridLeg(leg, MathAbs(signedLevelNum));
+   g_virtualPending[idx].tpPrice = ComputeVirtualTakeProfitPrice(orderType, leg, entryPx, signedLevelNum);
+}
+
+//+------------------------------------------------------------------+
 //| Nạp gridLevels. gridStep = D (thước dung sai / khớp mức).         |
 //+------------------------------------------------------------------+
 void InitializeGridLevels()
@@ -5238,13 +6961,16 @@ void InitializeGridLevels()
 
    VirtualPendingClear();
    OrderBalanceResetSideDwellState();
+   g_resetVwSideLastConfirmBarTime = 0;
    g_compoundSessionClosedNegativeProfitSwapUsd = 0.0;
    g_compoundSessionClosedTpProfitSwapUsd = 0.0;
    g_compoundSessionClosedTotalProfitSwapUsd = 0.0;
+   g_compoundSessionClosedOutVolumeLots = 0.0;
    // Current session = 0 and start counting from here (called when EA attached or EA auto reset)
    sessionStartTime = TimeCurrent();
    sessionStartBalance = GetTradingEquityViewUSD();
    g_sessionStartClosedCapitalUsd = GetTradingClosedCapitalUSD();
+   g_carryTotalUsdAtGridSessionStart = g_balanceCompoundCarryUsd;
    g_sessionMaxAbsDistanceFromBasePips = 0.0;
    g_orderBalanceSessionClosedNegativeUsd = 0.0;
    double tevSess = GetTradingEquityViewUSD();
@@ -5265,6 +6991,42 @@ void InitializeGridLevels()
    InitBaseEmaVirtGapSnapshotFromGridInit();
    AutoFirstLotByBaseEmaSnapshotFromGridInit();
    CompoundFloatThrHudUpdate(true);
+
+   if(EnableDeferVirtualPendingAfterBase && basePrice > 0.0)
+   {
+      const int dmin = MathMax(0, DeferVirtualPendingDelayMinutes);
+      const bool needTimeDefer = (dmin > 0);
+      const double minPipCfg = DeferVirtualPendingMinDistanceFromBasePips;
+      const bool needDistDefer = (minPipCfg > 0.0);
+      if(!needTimeDefer && !needDistDefer)
+      {
+         ClearDeferVirtualPendingGate();
+      }
+      else
+      {
+         g_deferVirtualPendingGateActive = true;
+         g_deferredVirtualGridOrdersAllowedAfter = TimeCurrent() + (datetime)dmin * 60;
+         g_deferVirtReleaseLogged = false;
+         if(needTimeDefer && needDistDefer)
+            Print("VDualGrid: 8A2 — Gốc + mức lưới đã khởi tạo; chưa đặt chờ ảo. Cần: (1) chờ ",
+                  IntegerToString(dmin), " phút; (2) max(|Bid−gốc|,|Ask−gốc|)/pip ≤ ",
+                  DoubleToString(minPipCfg, 1), " pip.");
+         else if(needTimeDefer)
+            Print("VDualGrid: 8A2 — Gốc + mức lưới đã khởi tạo; chưa đặt chờ ảo. Chỉ chờ ",
+                  IntegerToString(dmin), " phút (X pip = 0, không kiểm tra khoảng cách).");
+         else
+            Print("VDualGrid: 8A2 — Gốc + mức lưới đã khởi tạo; chưa đặt chờ ảo. Chỉ cần max(|Bid−gốc|,|Ask−gốc|)/pip ≤ ",
+                  DoubleToString(minPipCfg, 1), " pip (phút chờ = 0).");
+      }
+   }
+   else
+      ClearDeferVirtualPendingGate();
+
+   g_noVirtExecHadSuccessfulTrigger = false;
+   if(EnableRebaseIfNoVirtualExecWithinMinutes && RebaseIfNoVirtualExecWithinMinutes > 0 && basePrice > 0.0)
+      g_noVirtExecDeadline = TimeCurrent() + (datetime)(RebaseIfNoVirtualExecWithinMinutes * 60);
+   else
+      g_noVirtExecDeadline = 0;
 }
 
 //+------------------------------------------------------------------+
@@ -5280,7 +7042,7 @@ void RemoveDuplicateOrdersAtLevel()
    int nLevels = ArraySize(gridLevels);
    long magics[] = {MagicAA};
    bool enabled[] = {true};
-   ENUM_VGRID_LEG legs[] = {VGRID_LEG_BUY_ABOVE, VGRID_LEG_BUY_ABOVE_E, VGRID_LEG_SELL_ABOVE, VGRID_LEG_SELL_BELOW, VGRID_LEG_SELL_BELOW_F, VGRID_LEG_BUY_BELOW};
+   ENUM_VGRID_LEG legs[] = {VGRID_LEG_BUY_ABOVE, VGRID_LEG_BUY_ABOVE_E, VGRID_LEG_SELL_ABOVE, VGRID_LEG_SELL_ABOVE_G, VGRID_LEG_SELL_BELOW, VGRID_LEG_SELL_BELOW_F, VGRID_LEG_BUY_BELOW, VGRID_LEG_BUY_BELOW_H};
    for(int L = 0; L < nLevels; L++)
    {
       double priceLevel = gridLevels[L];
@@ -5292,8 +7054,8 @@ void RemoveDuplicateOrdersAtLevel()
          for(int lg = 0; lg < ArraySize(legs); lg++)
          {
             const ENUM_VGRID_LEG leg = legs[lg];
-            if((lvlNum > 0 && !(leg == VGRID_LEG_BUY_ABOVE || leg == VGRID_LEG_BUY_ABOVE_E || leg == VGRID_LEG_SELL_ABOVE))
-               || (lvlNum < 0 && !(leg == VGRID_LEG_SELL_BELOW || leg == VGRID_LEG_SELL_BELOW_F || leg == VGRID_LEG_BUY_BELOW)))
+            if((lvlNum > 0 && !(leg == VGRID_LEG_BUY_ABOVE || leg == VGRID_LEG_BUY_ABOVE_E || leg == VGRID_LEG_SELL_ABOVE || leg == VGRID_LEG_SELL_ABOVE_G))
+               || (lvlNum < 0 && !(leg == VGRID_LEG_SELL_BELOW || leg == VGRID_LEG_SELL_BELOW_F || leg == VGRID_LEG_BUY_BELOW || leg == VGRID_LEG_BUY_BELOW_H)))
                continue;
             int positionCount = 0;
             for(int i = 0; i < PositionsTotal(); i++)
@@ -5329,7 +7091,7 @@ void RemoveDuplicateOrdersAtLevel()
 }
 
 //+------------------------------------------------------------------+
-//| Mỗi bậc lưới: dựng chờ ảo theo từng chân (A/B/C/D/E/F), chạy song song. |
+//| Mỗi bậc lưới: dựng chờ ảo theo từng chân (A/B/C/D/E/F/G/H), chạy song song. |
 //+------------------------------------------------------------------+
 void ManageGridOrders()
 {
@@ -5339,6 +7101,41 @@ void ManageGridOrders()
       return;
 
    CancelStopOrdersOutsideBaseZone();
+
+   if(g_deferVirtualPendingGateActive)
+   {
+      // 8A2: AND điều kiện đang bật — phút>0 mới chờ; X pip>0 thì cần max(|Bid−gốc|,|Ask−gốc|)/pip ≤ X.
+      const int dminRt = MathMax(0, DeferVirtualPendingDelayMinutes);
+      const bool needTimeRt = (dminRt > 0);
+      if(needTimeRt && TimeCurrent() < g_deferredVirtualGridOrdersAllowedAfter)
+         return;
+
+      const double minPipRt = DeferVirtualPendingMinDistanceFromBasePips;
+      const bool needDistRt = (minPipRt > 0.0);
+      if(needDistRt)
+      {
+         const double pipPxDefer = OnePipPrice();
+         if(pipPxDefer <= 0.0)
+            return;
+         const double bidD = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+         const double askD = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         const double distPips = MathMax(MathAbs(bidD - basePrice), MathAbs(askD - basePrice)) / pipPxDefer;
+         if(distPips > minPipRt)
+            return;
+      }
+
+      if(!g_deferVirtReleaseLogged)
+      {
+         g_deferVirtReleaseLogged = true;
+         if(needTimeRt && needDistRt)
+            Print("VDualGrid: 8A2 — Đủ phút chờ và khoảng cách pip (≤ ", DoubleToString(minPipRt, 1), ") → bắt đầu đặt chờ ảo.");
+         else if(needTimeRt)
+            Print("VDualGrid: 8A2 — Đủ phút chờ → bắt đầu đặt chờ ảo (X pip = 0).");
+         else
+            Print("VDualGrid: 8A2 — Đủ khoảng cách pip (≤ ", DoubleToString(minPipRt, 1), ") → bắt đầu đặt chờ ảo (không chờ phút).");
+      }
+      ClearDeferVirtualPendingGate();
+   }
 
    if(ArraySize(gridLevels) < MaxGridLevels + 1)
       return;
@@ -5358,12 +7155,14 @@ void ManageGridOrders()
          EnsureOrderAtLevel(VGRID_LEG_BUY_ABOVE, wantBuy, pl, lvlNum);
          EnsureOrderAtLevel(VGRID_LEG_BUY_ABOVE_E, wantBuy, pl, lvlNum);
          EnsureOrderAtLevel(VGRID_LEG_SELL_ABOVE, wantSell, pl, lvlNum);
+         EnsureOrderAtLevel(VGRID_LEG_SELL_ABOVE_G, wantSell, pl, lvlNum);
       }
       else if(lvlNum < 0)
       {
          EnsureOrderAtLevel(VGRID_LEG_SELL_BELOW, wantSell, pl, lvlNum);
          EnsureOrderAtLevel(VGRID_LEG_SELL_BELOW_F, wantSell, pl, lvlNum);
          EnsureOrderAtLevel(VGRID_LEG_BUY_BELOW, wantBuy, pl, lvlNum);
+         EnsureOrderAtLevel(VGRID_LEG_BUY_BELOW_H, wantBuy, pl, lvlNum);
       }
    }
    RemoveDuplicateOrdersAtLevel();
@@ -5381,6 +7180,7 @@ void EnsureOrderAtLevel(ENUM_VGRID_LEG leg, ENUM_ORDER_TYPE orderType, double pr
    double existingPrice = 0.0;
    if(GetPendingOrderAtLevel(orderType, leg, priceLevel, ticket, existingPrice, MagicAA))
    {
+      RefreshEfVirtualPendingLotIfStale(MagicAA, orderType, leg, priceLevel, levelNum);
       double desiredPrice = NormalizeDouble(priceLevel, dgt);
       if(MathAbs(existingPrice - desiredPrice) > (pnt / 2.0))
          AdjustVirtualPendingToLevel(MagicAA, orderType, leg, existingPrice, priceLevel, levelNum);
@@ -5440,6 +7240,9 @@ void AdjustVirtualPendingToLevel(long magic, ENUM_ORDER_TYPE orderType, ENUM_VGR
    double tp = ComputeVirtualTakeProfitPrice(orderType, leg, price, signedLevelNum);
    g_virtualPending[idx].priceLevel = price;
    g_virtualPending[idx].tpPrice = tp;
+   if((leg == VGRID_LEG_BUY_ABOVE_E || leg == VGRID_LEG_SELL_BELOW_F)
+      && EfFloatingLossModeInputsConfigured())
+      g_virtualPending[idx].lot = GetLotForVirtualGridLeg(leg, MathAbs(signedLevelNum));
    Print("VDualGrid adjust: ", EnumToString(orderType), " magic ", magic, " at ", price, " TP ", tp);
 }
 
